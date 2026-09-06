@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from 'react';
-import { DEFAULT_LIVE_STATE, LiveState, readLiveState, subscribeLiveState } from '../lib/liveState';
+import { DEFAULT_LIVE_STATE, LiveState, loadLiveState, subscribeLiveState } from '../lib/liveState';
 import TelegramLiveChat from './TelegramLiveChat';
 
 type Candle = { t?:number; o:number; h:number; l:number; c:number };
@@ -55,7 +55,7 @@ export default function MarketDashboard({broadcast=false}:{broadcast?:boolean}){
   const [market,setMarket]=useState<MarketPayload|null>(null);
   const [now,setNow]=useState(Date.now());
 
-  useEffect(()=>{setState(readLiveState());return subscribeLiveState(setState)},[]);
+  useEffect(()=>{let active=true;loadLiveState().then(s=>{if(active)setState(s)});const off=subscribeLiveState(setState);return()=>{active=false;off()}},[]);
   useEffect(()=>{let stop=false;const load=async()=>{try{const r=await fetch('/api/market',{cache:'no-store'});const j=await r.json();if(!stop)setMarket(j)}catch{if(!stop)setMarket({ok:false,error:'Feed connection failed'})}};load();const t=setInterval(load,15000);return()=>{stop=true;clearInterval(t)}},[]);
   useEffect(()=>{const t=setInterval(()=>setNow(Date.now()),30000);return()=>clearInterval(t)},[]);
 
