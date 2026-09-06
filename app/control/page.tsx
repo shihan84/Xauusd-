@@ -2,18 +2,42 @@
 
 import { useEffect, useState } from 'react';
 import { BroadcastMode, DEFAULT_LIVE_STATE, LiveState, loadLiveState, publishLiveState } from '../../lib/liveState';
+import { getSupabaseBrowserClient } from '../../lib/supabaseClient';
 
 const modes: BroadcastMode[] = ['DASHBOARD','CHART FOCUS','NEWS','BREAKING','DATA RELEASE','COMMENTARY'];
+
+type AuthState = 'CHECKING'|'SIGNED_OUT'|'NO_PERMISSION'|'OPERATOR';
 
 export default function ControlPage() {
   const [state, setState] = useState<LiveState>(DEFAULT_LIVE_STATE);
   const [status, setStatus] = useState<'READY'|'SAVING'|'SAVED'|'ERROR'>('READY');
+  const [authState, setAuthState] = useState<AuthState>('CHECKING');
+  const [email, setEmail] = useState('');
   const [error, setError] = useState('');
 
-  useEffect(() => { loadLiveState().then(setState); }, []);
+  useEffect(() => {
+    loadLiveState().then(setState);
+    const check = async () => {
+      try {
+        const supabase = getSupabaseBrowserClient();
+        const { data: sessionData } = await supabase.auth.getSession();
+        const user = sessionData.session?.user;
+        if (!user) { setAuthState('SIGNED_OUT'); return; }
+        setEmail(user.email || '');
+        const { data, error: profileError } = await supabase.from('profiles').select('is_operator').eq('id', user.id).single();
+        if (profileError || !data?.is_operator) { setAuthState('NO_PERMISSION'); return; }
+        setAuthState('OPERATOR');
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Authentication check failed');
+        setAuthState('SIGNED_OUT');
+      }
+    };
+    check();
+  }, []);
 
   const update = <K extends keyof LiveState>(key: K, value: LiveState[K]) => setState(s => ({ ...s, [key]: value }));
   const publish = async () => {
+    if (authState !== 'OPERATOR') return;
     const next = { ...state, updatedAt: Date.now() };
     setState(next);
     setStatus('SAVING');
@@ -28,10 +52,27 @@ export default function ControlPage() {
     }
   };
 
+  const signOut = async () => {
+    try { await getSupabaseBrowserClient().auth.signOut(); } catch {}
+    window.location.href = '/login';
+  };
+
+  if (authState === 'CHECKING') return <main className="shell"><div className="panel card"><strong>Checking operator access…</strong></div></main>;
+
+  if (authState === 'SIGNED_OUT') return <main className="shell" style={{maxWidth:760}}>
+    <div className="topbar"><div className="brand"><div className="brand-badge">AU</div><div><h1>Broadcast Control</h1><div className="muted">Protected operator area</div></div></div></div>
+    <div className="panel card"><h2>Sign in required</h2><p className="muted">The public dashboard remains readable, but shared broadcast controls require an authenticated operator.</p><button className="btn btn-primary" onClick={()=>window.location.href='/login'}>Open Operator Login</button>{error&&<p className="negative">{error}</p>}</div>
+  </main>;
+
+  if (authState === 'NO_PERMISSION') return <main className="shell" style={{maxWidth:760}}>
+    <div className="topbar"><div className="brand"><div className="brand-badge">AU</div><div><h1>Broadcast Control</h1><div className="muted">Signed in as {email}</div></div></div></div>
+    <div className="panel card"><h2>Operator permission required</h2><p className="muted">Your account is authenticated, but it has not been granted operator permission yet. In Supabase, set <strong>profiles.is_operator</strong> to <strong>true</strong> for this account. This is intentionally manual so new public/member accounts can never take over the broadcast.</p><button className="btn btn-dark" onClick={signOut}>Sign Out</button></div>
+  </main>;
+
   return (
     <main className="shell">
-      <div className="topbar"><div className="brand"><div className="brand-badge">AU</div><div><h1>Broadcast Control</h1><div className="muted">Supabase Realtime control for dashboard + OBS broadcast</div></div></div><div className={`live-pill ${status==='ERROR'?'feed-warn':'feed-live'}`}>{status==='SAVING'?'SYNCING…':status==='SAVED'?'✓ SYNCED':status==='ERROR'?'SYNC ERROR':'REALTIME READY'}</div></div>
-      {error && <div className="panel card" style={{marginBottom:14}}><strong className="negative">Supabase write blocked:</strong> <span className="muted">{error}</span><div className="muted" style={{marginTop:6}}>For security, broadcast updates require an authenticated operator account. Local preview still updates in this browser.</div></div>}
+      <div className="topbar"><div className="brand"><div className="brand-badge">AU</div><div><h1>Broadcast Control</h1><div className="muted">Supabase Realtime control • Operator: {email}</div></div></div><div style={{display:'flex',gap:8,alignItems:'center'}}><div className={`live-pill ${status==='ERROR'?'feed-warn':'feed-live'}`}>{status==='SAVING'?'SYNCING…':status==='SAVED'?'✓ SYNCED':status==='ERROR'?'SYNC ERROR':'REALTIME READY'}</div><button className="btn btn-dark" onClick={signOut}>Sign Out</button></div></div>
+      {error && <div className="panel card" style={{marginBottom:14}}><strong className="negative">Supabase write blocked:</strong> <span className="muted">{error}</span></div>}
       <section className="control-grid">
         <div className="panel card">
           <div className="label">Market Bias</div>
