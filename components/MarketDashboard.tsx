@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { DEFAULT_LIVE_STATE, LiveState, loadLiveState, subscribeLiveState } from '../lib/liveState';
+import { DEFAULT_PERFORMANCE, DEFAULT_PUBLIC_SETUP, PerformanceState, PublicSetupState, loadIntelligenceState, subscribeIntelligenceState } from '../lib/intelligenceState';
 import TelegramLiveChat from './TelegramLiveChat';
 
 type Candle = { t?:number; o:number; h:number; l:number; c:number };
@@ -52,10 +53,13 @@ function CandleChart({ candles, price, state }:{candles:Candle[];price:number;st
 
 export default function MarketDashboard({broadcast=false}:{broadcast?:boolean}){
   const [state,setState]=useState<LiveState>(DEFAULT_LIVE_STATE);
+  const [setup,setSetup]=useState<PublicSetupState>(DEFAULT_PUBLIC_SETUP);
+  const [performance,setPerformance]=useState<PerformanceState>(DEFAULT_PERFORMANCE);
   const [market,setMarket]=useState<MarketPayload|null>(null);
   const [now,setNow]=useState(Date.now());
 
   useEffect(()=>{let active=true;loadLiveState().then(s=>{if(active)setState(s)});const off=subscribeLiveState(setState);return()=>{active=false;off()}},[]);
+  useEffect(()=>{let active=true;loadIntelligenceState().then(v=>{if(active){setSetup(v.setup);setPerformance(v.performance)}});const off=subscribeIntelligenceState(setSetup,setPerformance);return()=>{active=false;off()}},[]);
   useEffect(()=>{let stop=false;const load=async()=>{try{const r=await fetch('/api/market',{cache:'no-store'});const j=await r.json();if(!stop)setMarket(j)}catch{if(!stop)setMarket({ok:false,error:'Feed connection failed'})}};load();const t=setInterval(load,15000);return()=>{stop=true;clearInterval(t)}},[]);
   useEffect(()=>{const t=setInterval(()=>setNow(Date.now()),30000);return()=>clearInterval(t)},[]);
 
@@ -71,6 +75,9 @@ export default function MarketDashboard({broadcast=false}:{broadcast?:boolean}){
   const openSessions=sessions.filter(s=>s.isOpen).map(s=>s.label);
   const compact=broadcast&&state.mode==='CHART FOCUS'; const biasClass=state.bias==='BULLISH'?'positive':state.bias==='BEARISH'?'negative':'neutral';
   const online=market?.ok===true;
+  const setupPct=setup.totalCount>0?Math.min(100,(setup.passedCount/setup.totalCount)*100):0;
+  const setupLive=setup.totalCount>0 || setup.updatedAt>0;
+  const performanceLive=performance.totalCalls>0 || performance.asOf>0;
 
   return <main className={broadcast?'broadcast':'shell'}>
     <div className="topbar"><div className="brand"><div className="brand-badge">AU</div><div><h1>XAU/USD GOLD INTELLIGENCE</h1><div className="muted">Live research terminal • MT4 integration pending</div></div></div><div className={`live-pill ${online?'feed-live':'feed-warn'}`}>● {online?'ONLINE DATA':'BACKUP DATA'} • {state.mode}</div></div>
@@ -87,11 +94,11 @@ export default function MarketDashboard({broadcast=false}:{broadcast?:boolean}){
 
       {!compact&&<div className="side">
         <TelegramLiveChat compact={broadcast}/>
-        <div className="panel card setup-card"><div className="row"><div><div className="label">Official Setup Engine</div><h3 className="setup-title">BULLISH SETUP FORMING</h3></div><span className="grade">A</span></div><div className="gateway-number">7 <span>/ 9 gateways</span></div><div className="progress"><i style={{width:'77.8%'}}/></div><div className="mini-grid"><div><span>Mandatory</span><strong className="positive">4/4 PASS</strong></div><div><span>Final Trigger</span><strong className="neutral">WAITING</strong></div></div><div className="locked">🔒 Proprietary gateway details hidden on public dashboard</div></div>
-        <div className="panel card"><div className="label">Demo Performance Preview</div><div className="performance-grid"><div><span>Calls</span><strong>24</strong></div><div><span>Win rate</span><strong>70.8%</strong></div><div><span>Net R</span><strong className="positive">+14.6R</strong></div><div><span>Max DD</span><strong className="negative">-4.2R</strong></div></div><small className="muted">Preview layout only. Real statistics start with immutable official calls + MT4 demo execution.</small></div>
+        <div className="panel card setup-card"><div className="row"><div><div className="label">Official Setup Engine • {setup.symbol} {setup.timeframe}</div><h3 className="setup-title">{setup.direction} {setup.status.replaceAll('_',' ')}</h3></div><span className="grade">{setup.grade}</span></div><div className="gateway-number">{setup.passedCount} <span>/ {setup.totalCount || '—'} gateways</span></div><div className="progress"><i style={{width:`${setupPct}%`}}/></div><div className="mini-grid"><div><span>Mandatory</span><strong className={setup.mandatoryTotal>0&&setup.mandatoryPassed===setup.mandatoryTotal?'positive':'neutral'}>{setup.mandatoryPassed}/{setup.mandatoryTotal || '—'} {setup.mandatoryTotal>0&&setup.mandatoryPassed===setup.mandatoryTotal?'PASS':'WAIT'}</strong></div><div><span>Final Trigger</span><strong className="neutral">{setup.finalTrigger}</strong></div></div><div className="mini-grid"><div><span>Market State</span><strong>{setup.marketState}</strong></div><div><span>Execution Safety</span><strong>{setup.executionSafety}</strong></div></div><div className="locked">🔒 Proprietary gateway details hidden on public dashboard</div>{!setupLive&&<small className="muted">Realtime setup feed ready. Waiting for the strategy engine/MT4 integration.</small>}</div>
+        <div className="panel card"><div className="label">Official Calls Performance — Demo Account</div><div className="performance-grid"><div><span>Calls</span><strong>{performance.totalCalls}</strong></div><div><span>Win rate</span><strong>{performanceLive?`${performance.winRate.toFixed(1)}%`:'—'}</strong></div><div><span>Net R</span><strong className={performance.netR>=0?'positive':'negative'}>{performanceLive?`${performance.netR>=0?'+':''}${performance.netR.toFixed(1)}R`:'—'}</strong></div><div><span>Max DD</span><strong className="negative">{performanceLive?`${performance.maxDrawdownR.toFixed(1)}R`:'—'}</strong></div></div>{performance.demoBalance!=null&&<div className="mini-grid"><div><span>Demo Balance</span><strong>${performance.demoBalance.toFixed(2)}</strong></div><div><span>Demo Equity</span><strong>${(performance.demoEquity??performance.demoBalance).toFixed(2)}</strong></div></div>}<small className="muted">{performanceLive?'Realtime immutable-call performance snapshot.':'Ledger connected. Statistics begin only after official demo calls are recorded.'}</small></div>
       </div>}
     </section>
     <div className="source-note">SOURCE: {market?.source||'temporary fallback'} • {market?.note||'MT4 XAU/USD will replace the provisional feed.'}</div>
-    <div className="ticker"><span>⚡ {state.headline||'Gold Intelligence dashboard online'} &nbsp;&nbsp; • &nbsp;&nbsp; {openSessions.length?`${openSessions.join(' + ')} session active`:'Session transition'} &nbsp;&nbsp; • &nbsp;&nbsp; Public shows gateway count only — premium reveals permitted conditions.</span></div>
+    <div className="ticker"><span>⚡ {state.headline||'Gold Intelligence dashboard online'} &nbsp;&nbsp; • &nbsp;&nbsp; {openSessions.length?`${openSessions.join(' + ')} session active`:'Session transition'} &nbsp;&nbsp; • &nbsp;&nbsp; {setup.totalCount?`${setup.passedCount}/${setup.totalCount} gateways passed`:'Gateway engine waiting'} &nbsp;&nbsp; • &nbsp;&nbsp; Public shows aggregate gateway state only.</span></div>
   </main>;
 }
