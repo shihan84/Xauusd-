@@ -1,28 +1,37 @@
 "use client";
 
 import { useEffect, useState } from 'react';
-import { BroadcastMode, DEFAULT_LIVE_STATE, LiveState, publishLiveState, readLiveState } from '../../lib/liveState';
+import { BroadcastMode, DEFAULT_LIVE_STATE, LiveState, loadLiveState, publishLiveState } from '../../lib/liveState';
 
 const modes: BroadcastMode[] = ['DASHBOARD','CHART FOCUS','NEWS','BREAKING','DATA RELEASE','COMMENTARY'];
 
 export default function ControlPage() {
   const [state, setState] = useState<LiveState>(DEFAULT_LIVE_STATE);
-  const [saved, setSaved] = useState(false);
+  const [status, setStatus] = useState<'READY'|'SAVING'|'SAVED'|'ERROR'>('READY');
+  const [error, setError] = useState('');
 
-  useEffect(() => setState(readLiveState()), []);
+  useEffect(() => { loadLiveState().then(setState); }, []);
 
   const update = <K extends keyof LiveState>(key: K, value: LiveState[K]) => setState(s => ({ ...s, [key]: value }));
-  const publish = () => {
+  const publish = async () => {
     const next = { ...state, updatedAt: Date.now() };
     setState(next);
-    publishLiveState(next);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1200);
+    setStatus('SAVING');
+    setError('');
+    const result = await publishLiveState(next);
+    if (result.ok) {
+      setStatus('SAVED');
+      setTimeout(() => setStatus('READY'), 1600);
+    } else {
+      setStatus('ERROR');
+      setError(result.error || 'Supabase publish failed');
+    }
   };
 
   return (
     <main className="shell">
-      <div className="topbar"><div className="brand"><div className="brand-badge">AU</div><div><h1>Broadcast Control</h1><div className="muted">Controls the open dashboard/broadcast tabs in this browser</div></div></div><div className="live-pill">{saved ? '✓ PUBLISHED' : 'CONTROL READY'}</div></div>
+      <div className="topbar"><div className="brand"><div className="brand-badge">AU</div><div><h1>Broadcast Control</h1><div className="muted">Supabase Realtime control for dashboard + OBS broadcast</div></div></div><div className={`live-pill ${status==='ERROR'?'feed-warn':'feed-live'}`}>{status==='SAVING'?'SYNCING…':status==='SAVED'?'✓ SYNCED':status==='ERROR'?'SYNC ERROR':'REALTIME READY'}</div></div>
+      {error && <div className="panel card" style={{marginBottom:14}}><strong className="negative">Supabase write blocked:</strong> <span className="muted">{error}</span><div className="muted" style={{marginTop:6}}>For security, broadcast updates require an authenticated operator account. Local preview still updates in this browser.</div></div>}
       <section className="control-grid">
         <div className="panel card">
           <div className="label">Market Bias</div>
