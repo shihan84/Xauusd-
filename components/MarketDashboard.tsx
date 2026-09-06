@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { DEFAULT_LIVE_STATE, LiveState, readLiveState, subscribeLiveState } from '../lib/liveState';
+import TelegramLiveChat from './TelegramLiveChat';
 
 const vcprs = [
   { date: 'Sep 03', pivot: 4462.38, touched: false },
@@ -24,8 +25,7 @@ function buildCandles(price:number): Candle[] {
     out.push({o:open,h:high,l:low,c:close});
     prev = close;
   }
-  const delta = price - out[out.length-1].c;
-  return out.map((c,i)=> i===out.length-1 ? {...c,c:price,h:Math.max(c.h,price),l:Math.min(c.l,price)} : c).map((c,i)=> i===out.length-1 ? c : c);
+  return out.map((c,i)=> i===out.length-1 ? {...c,c:price,h:Math.max(c.h,price),l:Math.min(c.l,price)} : c);
 }
 
 function CandleChart({ price, state }: { price:number; state:LiveState }) {
@@ -94,11 +94,11 @@ export default function MarketDashboard({ broadcast=false }: { broadcast?:boolea
       </div>
 
       {!compact && <div className="side">
+        <TelegramLiveChat compact={broadcast} />
         <div className="panel card"><div className="label">Historic VCPR Pivots</div><div className="vcpr-table">{vcprs.filter(v=>state.showAllVcpr && (!v.touched||state.showRevisited)).map(v=><div className="vcpr-row" key={v.date}><span>{v.date}</span><strong>{v.pivot.toFixed(2)}</strong><span className={v.touched?'muted':'positive'}>{v.touched?'Revisited':'Untouched'}</span></div>)}</div></div>
-        <div className="panel card"><div className="label">Next US Risk Event</div><h3 style={{marginBottom:6}}>Economic calendar connection pending</h3><div className="muted">Final version will show ET + IST and the 5-minute pre-event alert.</div></div>
-        <div className="panel card"><div className="label">Feed Status</div><div className="row"><span>MT4 Bridge</span><strong className="neutral">PENDING</strong></div><div className="row" style={{marginTop:8}}><span>Dashboard</span><strong className="positive">ONLINE</strong></div></div>
+        {!broadcast && <div className="panel card"><div className="label">Next US Risk Event</div><h3 style={{marginBottom:6}}>Economic calendar connection pending</h3><div className="muted">Final version will show ET + IST and the 5-minute pre-event alert.</div></div>}
       </div>}
     </section>
-    <div className="ticker"><span>⚡ {state.headline || 'Gold Intelligence dashboard online'} &nbsp;&nbsp; • &nbsp;&nbsp; VCPR: originating-day virgin classification is permanent; visible level = center Pivot only.</span></div>
+    <div className="ticker"><span>⚡ {state.headline || 'Gold Intelligence dashboard online'} &nbsp;&nbsp; • &nbsp;&nbsp; Telegram public group chat is displayed live on the broadcast panel.</span></div>
   </main>;
 }
