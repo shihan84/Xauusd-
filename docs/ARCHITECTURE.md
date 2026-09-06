@@ -8,9 +8,52 @@ The platform is split into three access levels:
 
 - PUBLIC: YouTube/broadcast dashboard, public Telegram alerts, simplified setup strength, session status, market bias, selected technical events, and transparent demo performance statistics.
 - MEMBER: account-based access to richer market views and community features.
-- PREMIUM: interactive charts, personal layouts/presets, configurable supported indicators, detailed gateway breakdown, personal alerts, premium Telegram trade plans, historical/replay analytics, and host-follow mode.
+- PREMIUM: interactive charts, personal layouts/presets, configurable supported indicators, detailed gateway breakdown, personal alerts, premium Telegram trade plans, historical/replay analytics, host-follow mode, and personalized premium support.
 
 Public users must never receive the proprietary gateway definitions. Public surfaces may show only counts/summary such as `7/9 gateways passed`, mandatory gate status, setup grade, and setup-strength state.
+
+## Premium trials and onboarding
+
+Premium onboarding should support trial access before paid conversion:
+
+- Standard premium trial: 3 days.
+- Promotional female-trader premium trial: 6 days.
+- Trial eligibility, start/end timestamps, conversion status, and prior-trial usage must be stored server-side so a user cannot repeatedly restart a trial.
+- Trial users receive the same market-data safety warnings as paid premium users.
+- Trial entitlements should be configurable so specific premium-only features can be enabled/disabled without code changes.
+
+Before a trial or paid premium user accesses trade-plan/auto-execution-oriented features, show a prominent demo-first risk notice. Recommended wording:
+
+`Start on a demo account first. Validate the strategy, execution, spread, drawdown and your own risk tolerance before considering any real-money trading. Market analysis and model-generated trade plans are not guaranteed.`
+
+The product should require acknowledgement of this notice during onboarding and keep the acknowledgement timestamp/version for audit purposes.
+
+Because trial eligibility differs by user category, keep the rule in a configurable entitlement/promotion policy rather than hard-coding it into chart or trading logic. Review applicable local consumer, anti-discrimination, platform and payment-provider requirements before public launch.
+
+## Premium personalized Telegram support
+
+Premium users should have access to personalized support through Telegram.
+
+Support model:
+
+- Each premium user can open a private support conversation/request linked to their platform account.
+- Support requests can be routed to a dedicated operator/admin Telegram workflow or private support group/topic.
+- The platform should support at least a 10-minute dedicated support window/session for qualifying premium requests.
+- Support availability, queue state, operator assignment and timestamps should be visible to the operator/admin.
+- Support must not promise guaranteed profit, guaranteed recovery or guaranteed trade outcomes.
+- When a user asks whether to take a live trade, support should reinforce the demo-first/risk policy and explain the analysis/gateway state rather than present certainty.
+- Premium support history should be auditable and kept separate from public Telegram chat.
+
+Suggested support states:
+
+`NEW -> QUEUED -> ASSIGNED -> ACTIVE -> RESOLVED -> CLOSED`
+
+Possible future extensions:
+
+- Appointment slots for longer one-to-one support.
+- Priority tiers for higher subscription plans.
+- In-dashboard `Request Support` button that deep-links/opens the authorized Telegram support flow.
+- Support SLA timers and operator analytics.
 
 ## Core data flow
 
@@ -254,6 +297,10 @@ May receive confirmed trade plans including entry zone, SL, TP1/TP2/TP3, risk/re
 
 Every message links to the same immutable Call ID used by the dashboard/demo executor.
 
+### Premium support Telegram
+
+Private personalized support is a separate workflow from the premium alert channel. It should support one-to-one or private-topic communication, a minimum 10-minute dedicated support session/window for qualifying requests, operator assignment, queue state, and audit history.
+
 ## Demo execution
 
 Demo MT4 execution supports modes:
@@ -399,6 +446,7 @@ Premium features include:
 - Detailed permitted gateway view
 - Personal alerts
 - Premium Telegram
+- Personalized Telegram support
 - Historical VCPR analytics
 - Replay/backtest mode
 - Similar historical setup statistics
@@ -426,6 +474,9 @@ Rules:
 - `/broadcast` is read-only.
 - `/control` requires authentication.
 - Premium settings/alerts/layouts belong to each account.
+- Trial and paid entitlements are resolved server-side.
+- Trial start/end and prior-trial usage are recorded server-side.
+- Premium support conversations are private and auditable.
 - Secrets stay server-side/environment only.
 - Market feed endpoints require authentication and stale-data detection.
 - MT4 is never directly exposed.
@@ -447,7 +498,9 @@ Rules:
 12. Public broadcast performance/setup UI
 13. Telegram public/premium routing
 14. Premium auth/terminal/presets/personal alerts
-15. Recovery/hedge research engine
-16. Replay/similar-setup analytics
+15. Premium trials/onboarding + demo-first acknowledgement
+16. Premium Telegram personalized support workflow
+17. Recovery/hedge research engine
+18. Replay/similar-setup analytics
 
 All strategy/gateway changes should be versioned so historical results remain attributable to the exact rules used at that time.
