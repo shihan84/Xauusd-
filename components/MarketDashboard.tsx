@@ -86,9 +86,9 @@ export default function MarketDashboard({broadcast=false}:{broadcast?:boolean}){
       </div>
 
       {!compact&&<div className="side">
+        <TelegramLiveChat compact={broadcast}/>
         <div className="panel card setup-card"><div className="row"><div><div className="label">Official Setup Engine</div><h3 className="setup-title">BULLISH SETUP FORMING</h3></div><span className="grade">A</span></div><div className="gateway-number">7 <span>/ 9 gateways</span></div><div className="progress"><i style={{width:'77.8%'}}/></div><div className="mini-grid"><div><span>Mandatory</span><strong className="positive">4/4 PASS</strong></div><div><span>Final Trigger</span><strong className="neutral">WAITING</strong></div></div><div className="locked">🔒 Proprietary gateway details hidden on public dashboard</div></div>
         <div className="panel card"><div className="label">Demo Performance Preview</div><div className="performance-grid"><div><span>Calls</span><strong>24</strong></div><div><span>Win rate</span><strong>70.8%</strong></div><div><span>Net R</span><strong className="positive">+14.6R</strong></div><div><span>Max DD</span><strong className="negative">-4.2R</strong></div></div><small className="muted">Preview layout only. Real statistics start with immutable official calls + MT4 demo execution.</small></div>
-        {!broadcast&&<TelegramLiveChat compact={broadcast}/>} 
       </div>}
     </section>
     <div className="source-note">SOURCE: {market?.source||'temporary fallback'} • {market?.note||'MT4 XAU/USD will replace the provisional feed.'}</div>
