@@ -1,0 +1,56 @@
+name: Build MT4 EA
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'mt4/**'
+      - '.github/workflows/build-mt4-ea.yml'
+
+jobs:
+  build:
+    runs-on: [self-hosted, Windows, X64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile EA with MetaEditor
+        shell: powershell
+        env:
+          METAEDITOR_PATH: ${{ vars.METAEDITOR_PATH }}
+          MQL4_INCLUDE_PATH: ${{ vars.MQL4_INCLUDE_PATH }}
+        run: |
+          if (-not $env:METAEDITOR_PATH) {
+            throw 'Set repository variable METAEDITOR_PATH to the full path of metaeditor.exe on the self-hosted Windows runner.'
+          }
+
+          $source = (Resolve-Path 'mt4/XauusdBridgeEA.mq4').Path
+          $log = Join-Path $env:RUNNER_TEMP 'metaeditor-build.log'
+
+          $args = @("/compile:$source", "/log:$log")
+          if ($env:MQL4_INCLUDE_PATH) {
+            $args += "/inc:$env:MQL4_INCLUDE_PATH"
+          }
+
+          & $env:METAEDITOR_PATH $args
+          Start-Sleep -Seconds 2
+
+          if (Test-Path $log) {
+            Get-Content $log
+            if (Select-String -Path $log -Pattern 'error' -CaseSensitive:$false | Where-Object { $_.Line -notmatch '0 error' }) {
+              throw 'MetaEditor reported compilation errors.'
+            }
+          }
+
+          $ex4 = [System.IO.Path]::ChangeExtension($source, '.ex4')
+          if (-not (Test-Path $ex4)) {
+            throw "Expected EX4 output not found: $ex4"
+          }
+
+      - name: Upload EX4
+        uses: actions/upload-artifact@v4
+        with:
+          name: XauusdBridgeEA-ex4
+          path: mt4/XauusdBridgeEA.ex4
+          if-no-files-found: error
