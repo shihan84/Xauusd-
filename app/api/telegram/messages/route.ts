@@ -27,7 +27,9 @@ export async function GET() {
   }
 
   try {
-    const url = `https://api.telegram.org/bot${token}/getUpdates?limit=100&allowed_updates=%5B%22message%22%5D`;
+    // Negative offset asks Telegram for the newest messages at the end of the update queue,
+    // preventing an old backlog from blocking newer live-chat messages.
+    const url = `https://api.telegram.org/bot${token}/getUpdates?offset=-40&limit=40&allowed_updates=%5B%22message%22%5D`;
     const response = await fetch(url, { cache: 'no-store' });
     const payload = await response.json();
 
@@ -51,8 +53,7 @@ export async function GET() {
           text: m.text || m.caption || '[Media message]',
           date: m.date
         };
-      })
-      .slice(-40);
+      });
 
     return NextResponse.json({ configured: true, messages }, {
       headers: { 'Cache-Control': 'no-store, max-age=0' }
