@@ -35,6 +35,24 @@ function cloudConfigured() {
   return Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
 }
 
+function supabaseHeaders() {
+  const headers = {
+    apikey: SUPABASE_SERVICE_ROLE_KEY,
+    'Content-Type': 'application/json',
+    Prefer: 'resolution=merge-duplicates,return=minimal'
+  };
+
+  // New Supabase sb_secret_* keys are API keys, not JWTs. Sending them as
+  // Authorization: Bearer causes PostgREST to treat the request as a user-token
+  // request and RLS can be enforced. Legacy service_role JWTs still need the
+  // Authorization header, so retain it only for JWT-shaped keys.
+  if (!SUPABASE_SERVICE_ROLE_KEY.startsWith('sb_secret_')) {
+    headers.Authorization = `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`;
+  }
+
+  return headers;
+}
+
 async function upsertSupabaseTick(tick) {
   if (!cloudConfigured()) return;
 
@@ -49,12 +67,7 @@ async function upsertSupabaseTick(tick) {
 
       const response = await fetch(`${SUPABASE_URL}/rest/v1/market_latest?on_conflict=symbol`, {
         method: 'POST',
-        headers: {
-          apikey: SUPABASE_SERVICE_ROLE_KEY,
-          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-          'Content-Type': 'application/json',
-          Prefer: 'resolution=merge-duplicates,return=minimal'
-        },
+        headers: supabaseHeaders(),
         body: JSON.stringify({
           symbol: current.symbol,
           source: 'MT4',
