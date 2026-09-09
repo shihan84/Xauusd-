@@ -1,16 +1,19 @@
 #property strict
 #property description "XAUUSD live market bridge for the XAUUSD research dashboard"
 
-input string BridgeUrl = "http://127.0.0.1:8787/ingest/tick";
+input string BridgeUrl = "http://127.0.0.1/ingest/tick";
+input string CandlesUrl = "http://127.0.0.1/ingest/candles";
 input string ApiToken = "CHANGE_ME";
 input int SendIntervalMs = 1000;
+input int CandleSyncIntervalSec = 30;
+input int CandleBarsPerTimeframe = 120;
 input bool SendIndicators = true;
 input int EmaFastPeriod = 20;
 input int EmaSlowPeriod = 50;
 input int RsiPeriod = 14;
 input int AtrPeriod = 14;
 
-ulong lastSendMs = 0;
+ulong lastCandleSyncMs = 0;
 
 string JsonEscape(string s)
 {
@@ -31,10 +34,10 @@ bool PostJson(string url, string json)
       ArrayResize(payload, ArraySize(payload) - 1);
 
    ResetLastError();
-   int status = WebRequest("POST", url, headers, 2000, payload, result, resultHeaders);
+   int status = WebRequest("POST", url, headers, 5000, payload, result, resultHeaders);
    if(status < 200 || status >= 300)
    {
-      Print("Bridge POST failed. HTTP=", status, " error=", GetLastError());
+      Print("Bridge POST failed. URL=", url, " HTTP=", status, " error=", GetLastError());
       return false;
    }
    return true;
@@ -101,10 +104,62 @@ string BuildTickJson()
    return json;
 }
 
+void AppendTimeframeCandles(string &json, int tf, bool &first)
+{
+   int available = iBars(Symbol(), tf);
+   int count = MathMin(CandleBarsPerTimeframe, available);
+   if(count <= 0) return;
+
+   for(int shift = count - 1; shift >= 0; shift--)
+   {
+      datetime barTime = iTime(Symbol(), tf, shift);
+      if(barTime <= 0) continue;
+
+      double o = iOpen(Symbol(), tf, shift);
+      double h = iHigh(Symbol(), tf, shift);
+      double l = iLow(Symbol(), tf, shift);
+      double c = iClose(Symbol(), tf, shift);
+
+      if(!first) json += ",";
+      first = false;
+
+      json += "{";
+      json += "\"timeframe\":\"" + TimeframeName(tf) + "\",";
+      json += "\"time\":" + IntegerToString((int)barTime) + ",";
+      json += "\"open\":" + DoubleToString(o, Digits) + ",";
+      json += "\"high\":" + DoubleToString(h, Digits) + ",";
+      json += "\"low\":" + DoubleToString(l, Digits) + ",";
+      json += "\"close\":" + DoubleToString(c, Digits) + ",";
+      json += "\"is_closed\":" + (shift > 0 ? "true" : "false");
+      json += "}";
+   }
+}
+
+string BuildCandlesJson()
+{
+   string json = "{";
+   json += "\"type\":\"candles\",";
+   json += "\"symbol\":\"" + JsonEscape(Symbol()) + "\",";
+   json += "\"server_time\":" + IntegerToString((int)TimeCurrent()) + ",";
+   json += "\"candles\":[";
+
+   bool first = true;
+   AppendTimeframeCandles(json, PERIOD_M1, first);
+   AppendTimeframeCandles(json, PERIOD_M5, first);
+   AppendTimeframeCandles(json, PERIOD_M15, first);
+   AppendTimeframeCandles(json, PERIOD_M30, first);
+   AppendTimeframeCandles(json, PERIOD_H1, first);
+   AppendTimeframeCandles(json, PERIOD_H4, first);
+   AppendTimeframeCandles(json, PERIOD_D1, first);
+
+   json += "]}";
+   return json;
+}
+
 int OnInit()
 {
    EventSetMillisecondTimer(MathMax(250, SendIntervalMs));
-   Print("XauusdBridgeEA started for ", Symbol(), ". Allow URL in MT4: ", BridgeUrl);
+   Print("XauusdBridgeEA started for ", Symbol(), ". Tick URL: ", BridgeUrl, " Candle URL: ", CandlesUrl);
    return INIT_SUCCEEDED;
 }
 
@@ -116,6 +171,14 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    PostJson(BridgeUrl, BuildTickJson());
+
+   ulong nowMs = GetTickCount();
+   ulong intervalMs = (ulong)MathMax(5, CandleSyncIntervalSec) * 1000;
+   if(lastCandleSyncMs == 0 || nowMs - lastCandleSyncMs >= intervalMs)
+   {
+      if(PostJson(CandlesUrl, BuildCandlesJson()))
+         lastCandleSyncMs = nowMs;
+   }
 }
 
 void OnTick()
