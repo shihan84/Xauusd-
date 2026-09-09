@@ -9,11 +9,14 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 const PORT = Number(process.env.PORT || 8787);
 const API_TOKEN = process.env.MT4_BRIDGE_TOKEN || 'CHANGE_ME';
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 let latestTick = null;
+let lastCandlesAt = null;
 let lastSupabaseOkAt = null;
 let lastSupabaseError = null;
+let lastCandleSupabaseOkAt = null;
+let lastCandleSupabaseError = null;
 let cloudPublishInFlight = false;
 let pendingCloudTick = null;
 
@@ -32,22 +35,20 @@ function broadcast(payload) {
 }
 
 function cloudConfigured() {
-  return Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
+  return Boolean(SUPABASE_URL && SUPABASE_KEY);
 }
 
-function supabaseHeaders() {
+function supabaseHeaders(prefer = 'resolution=merge-duplicates,return=minimal') {
   const headers = {
-    apikey: SUPABASE_SERVICE_ROLE_KEY,
+    apikey: SUPABASE_KEY,
     'Content-Type': 'application/json',
-    Prefer: 'resolution=merge-duplicates,return=minimal'
+    Prefer: prefer
   };
 
-  // New Supabase sb_secret_* keys are API keys, not JWTs. Sending them as
-  // Authorization: Bearer causes PostgREST to treat the request as a user-token
-  // request and RLS can be enforced. Legacy service_role JWTs still need the
-  // Authorization header, so retain it only for JWT-shaped keys.
-  if (!SUPABASE_SERVICE_ROLE_KEY.startsWith('sb_secret_')) {
-    headers.Authorization = `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`;
+  // New sb_secret_* keys are API keys, not JWTs. Legacy service_role JWTs
+  // still use Authorization: Bearer.
+  if (!SUPABASE_KEY.startsWith('sb_secret_')) {
+    headers.Authorization = `Bearer ${SUPABASE_KEY}`;
   }
 
   return headers;
@@ -93,12 +94,52 @@ async function upsertSupabaseTick(tick) {
     }
   } catch (error) {
     lastSupabaseError = error instanceof Error ? error.message : String(error);
-    console.error('Supabase publish failed:', lastSupabaseError);
+    console.error('Supabase tick publish failed:', lastSupabaseError);
   } finally {
     cloudPublishInFlight = false;
-
-    // If a newer tick arrived after the final loop check, send it now.
     if (pendingCloudTick) void upsertSupabaseTick(pendingCloudTick);
+  }
+}
+
+async function upsertSupabaseCandles(payload) {
+  if (!cloudConfigured()) return;
+
+  const rows = Array.isArray(payload?.candles)
+    ? payload.candles
+        .filter(c => c && typeof c.timeframe === 'string' && Number.isFinite(Number(c.time)))
+        .map(c => ({
+          symbol: payload.symbol,
+          timeframe: c.timeframe,
+          open_time: Number(c.time),
+          open: Number(c.open),
+          high: Number(c.high),
+          low: Number(c.low),
+          close: Number(c.close),
+          is_closed: Boolean(c.is_closed),
+          source: 'MT4',
+          updated_at: new Date().toISOString()
+        }))
+    : [];
+
+  if (!rows.length) return;
+
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/market_candles?on_conflict=symbol,timeframe,open_time`, {
+      method: 'POST',
+      headers: supabaseHeaders(),
+      body: JSON.stringify(rows)
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`Supabase HTTP ${response.status}: ${detail}`);
+    }
+
+    lastCandleSupabaseOkAt = Date.now();
+    lastCandleSupabaseError = null;
+  } catch (error) {
+    lastCandleSupabaseError = error instanceof Error ? error.message : String(error);
+    console.error('Supabase candle publish failed:', lastCandleSupabaseError);
   }
 }
 
@@ -107,10 +148,13 @@ app.get('/health', (_req, res) => {
     ok: true,
     service: 'xauusd-mt4-bridge',
     latestTickAt: latestTick?.received_at ?? null,
+    latestCandlesAt: lastCandlesAt,
     cloud: {
       configured: cloudConfigured(),
       lastOkAt: lastSupabaseOkAt,
-      lastError: lastSupabaseError
+      lastError: lastSupabaseError,
+      lastCandleOkAt: lastCandleSupabaseOkAt,
+      lastCandleError: lastCandleSupabaseError
     }
   });
 });
@@ -138,6 +182,19 @@ app.post('/ingest/tick', (req, res) => {
   res.status(202).json({ ok: true });
 });
 
+app.post('/ingest/candles', (req, res) => {
+  if (!authorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+
+  const body = req.body;
+  if (!body || body.type !== 'candles' || typeof body.symbol !== 'string' || !Array.isArray(body.candles)) {
+    return res.status(400).json({ error: 'Invalid candle payload' });
+  }
+
+  lastCandlesAt = Date.now();
+  void upsertSupabaseCandles(body);
+  res.status(202).json({ ok: true, rows: body.candles.length });
+});
+
 wss.on('connection', (socket) => {
   if (latestTick) socket.send(JSON.stringify(latestTick));
 });
@@ -147,7 +204,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(
     cloudConfigured()
       ? 'Supabase cloud forwarding enabled.'
-      : 'Supabase cloud forwarding disabled: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.'
+      : 'Supabase cloud forwarding disabled: set SUPABASE_URL and SUPABASE_SECRET_KEY/SUPABASE_SERVICE_ROLE_KEY.'
   );
   console.log('Keep this service behind TLS/authentication before exposing it publicly.');
 });
