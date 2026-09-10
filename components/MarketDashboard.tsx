@@ -84,33 +84,43 @@ function sessionNow(label:string, tz:string, openHour:number, closeHour:number){
 function CandleChart({ candles, price, state, vcprs }:{candles:Candle[];price:number;state:LiveState;vcprs:VcprLevel[]}){
   const valid=candles.length?candles:fallbackCandles(price);
   const [visibleCount,setVisibleCount]=useState(90);
-  const [endOffset,setEndOffset]=useState(0);
-  const [cursor,setCursor]=useState<{x:number;y:number;index:number}|null>(null);
-  const dragRef=useRef<{x:number;offset:number}|null>(null);
+  const [rightSpaceBars,setRightSpaceBars]=useState(18);
+  const [cursor,setCursor]=useState<{x:number;y:number;dataIndex:number|null}|null>(null);
+  const dragRef=useRef<{x:number;rightSpaceBars:number}|null>(null);
   const svgRef=useRef<SVGSVGElement|null>(null);
 
   useEffect(()=>{
-    setEndOffset(0);
     setVisibleCount(v=>Math.min(Math.max(40,v),Math.max(40,valid.length)));
   },[valid.length]);
 
-  const count=Math.max(1,Math.min(visibleCount,valid.length));
-  const maxOffset=Math.max(0,valid.length-count);
-  const offset=Math.min(endOffset,maxOffset);
-  const end=Math.max(count,valid.length-offset);
-  const start=Math.max(0,end-count);
-  const visible=valid.slice(start,end);
+  const count=Math.max(20,visibleCount);
+  const maxFuture=Math.max(18,Math.floor(count*0.65));
+  const maxHistory=Math.max(0,valid.length-count+8);
+  const rightSpace=Math.max(-maxHistory,Math.min(maxFuture,rightSpaceBars));
+  const viewEnd=valid.length+rightSpace;
+  const viewStart=viewEnd-count;
+  const firstIndex=Math.max(0,Math.floor(viewStart));
+  const lastIndex=Math.min(valid.length-1,Math.ceil(viewEnd)-1);
+  const visibleIndices:number[]=[];
+  for(let i=firstIndex;i<=lastIndex;i++){
+    const slot=i-viewStart;
+    if(slot>=-1&&slot<=count+1)visibleIndices.push(i);
+  }
+  const visible=visibleIndices.map(i=>valid[i]);
 
   const sma44=useMemo(()=>sma(valid,44),[valid]);
   const ema99=useMemo(()=>ema(valid,99),[valid]);
   const sma200=useMemo(()=>sma(valid,200),[valid]);
 
   const candleVals=visible.flatMap(c=>[c.h,c.l]);
-  const rawMin=Math.min(...candleVals,price), rawMax=Math.max(...candleVals,price);
+  const latestVisible=viewStart<=valid.length-1&&viewEnd>=valid.length-1;
+  const scaleVals=latestVisible?[...candleVals,price]:candleVals;
+  const rawMin=Math.min(...(scaleVals.length?scaleVals:[price])), rawMax=Math.max(...(scaleVals.length?scaleVals:[price]));
   const padding=Math.max(1,(rawMax-rawMin)*0.08);
   const min=rawMin-padding, max=rawMax+padding, span=Math.max(1,max-min);
   const y=(v:number)=>430-((v-min)/span)*390;
-  const step=1000/Math.max(1,visible.length);
+  const step=1000/count;
+  const xForIndex=(index:number)=>(index-viewStart+0.5)*step;
 
   const shown=state.showAllVcpr
     ? vcprs.filter(v=>(!v.touched||state.showRevisited) && v.pivot>=min && v.pivot<=max)
@@ -118,10 +128,10 @@ function CandleChart({ candles, price, state, vcprs }:{candles:Candle[];price:nu
 
   const maPath=(series:(number|null)[])=>{
     let d='';
-    for(let i=0;i<visible.length;i++){
-      const value=series[start+i];
+    for(const index of visibleIndices){
+      const value=series[index];
       if(value==null)continue;
-      const x=i*step+step/2;
+      const x=xForIndex(index);
       d+=`${d?' L':'M'} ${x.toFixed(2)} ${y(value).toFixed(2)}`;
     }
     return d;
@@ -134,18 +144,21 @@ function CandleChart({ candles, price, state, vcprs }:{candles:Candle[];price:nu
 
   const onPointerMove=(e:React.PointerEvent<SVGSVGElement>)=>{
     const p=pointerToChart(e);
-    const i=Math.max(0,Math.min(visible.length-1,Math.floor(p.x/step)));
-    setCursor({x:p.x,y:p.y,index:i});
+    const virtualIndex=viewStart+(p.x/step);
+    const candidate=Math.floor(virtualIndex);
+    const dataIndex=candidate>=0&&candidate<valid.length?candidate:null;
+    setCursor({x:p.x,y:p.y,dataIndex});
     if(dragRef.current){
       const rect=e.currentTarget.getBoundingClientRect();
-      const barPx=rect.width/Math.max(1,count);
-      const deltaBars=Math.round((e.clientX-dragRef.current.x)/Math.max(1,barPx));
-      setEndOffset(Math.max(0,Math.min(maxOffset,dragRef.current.offset+deltaBars)));
+      const barPx=rect.width/count;
+      const deltaBars=(e.clientX-dragRef.current.x)/Math.max(1,barPx);
+      const next=dragRef.current.rightSpaceBars-deltaBars;
+      setRightSpaceBars(Math.max(-maxHistory,Math.min(maxFuture,next)));
     }
   };
 
-  const hover=cursor?visible[cursor.index]:null;
-  const resetLive=()=>{setEndOffset(0);setVisibleCount(Math.min(90,valid.length));};
+  const hover=cursor?.dataIndex!=null?valid[cursor.dataIndex]:null;
+  const resetLive=()=>{setRightSpaceBars(18);setVisibleCount(90);};
 
   return <div className="chart" style={{position:'relative'}}>
     <div style={{position:'absolute',zIndex:3,top:8,right:10,display:'flex',gap:6}}>
@@ -155,14 +168,15 @@ function CandleChart({ candles, price, state, vcprs }:{candles:Candle[];price:nu
       O {hover.o.toFixed(2)} &nbsp; H {hover.h.toFixed(2)} &nbsp; L {hover.l.toFixed(2)} &nbsp; C {hover.c.toFixed(2)}
     </div>}
     <svg ref={svgRef} viewBox="0 0 1000 460" preserveAspectRatio="none"
-      onWheel={e=>{e.preventDefault();const next=e.deltaY<0?visibleCount-10:visibleCount+10;setVisibleCount(Math.max(20,Math.min(valid.length,next)));}}
-      onPointerDown={e=>{dragRef.current={x:e.clientX,offset:endOffset};e.currentTarget.setPointerCapture(e.pointerId)}}
+      onWheel={e=>{e.preventDefault();const next=e.deltaY<0?visibleCount-10:visibleCount+10;setVisibleCount(Math.max(20,Math.min(Math.max(90,valid.length+20),next)));}}
+      onPointerDown={e=>{dragRef.current={x:e.clientX,rightSpaceBars};e.currentTarget.setPointerCapture(e.pointerId)}}
       onPointerUp={()=>{dragRef.current=null}}
       onPointerCancel={()=>{dragRef.current=null}}
       onPointerLeave={()=>{dragRef.current=null;setCursor(null)}}
       onPointerMove={onPointerMove}
       style={{cursor:dragRef.current?'grabbing':'crosshair',touchAction:'none'}}>
       {Array.from({length:7},(_,i)=><line key={i} x1="0" x2="1000" y1={35+i*61} y2={35+i*61} stroke="#162231" strokeWidth="1" />)}
+      {rightSpace>0&&<rect x={Math.max(0,(valid.length-viewStart)*step)} y="0" width={Math.min(1000,rightSpace*step)} height="460" fill="#0b1118" opacity=".18"/>}
       {shown.map(v=><g key={`${v.date}-${v.pivot}`}>
         <line x1="0" x2="1000" y1={y(v.pivot)} y2={y(v.pivot)} stroke={v.touched?'#667085':'#d9b54a'} strokeWidth={v.touched?1.2:2} strokeDasharray={v.touched?'8 7':'0'}/>
         <text x="14" y={Math.max(18,y(v.pivot)-7)} fill={v.touched?'#8d99aa':'#f1d16c'} fontSize="12">VCPR {formatVcprDate(v.date)} · {v.pivot.toFixed(2)}{v.touched?' · revisited':' · unresolved'}</text>
@@ -170,9 +184,9 @@ function CandleChart({ candles, price, state, vcprs }:{candles:Candle[];price:nu
       <path d={maPath(sma44)} fill="none" stroke="#4ade80" strokeWidth="1.5" opacity=".9"/>
       <path d={maPath(ema99)} fill="none" stroke="#38bdf8" strokeWidth="1.5" opacity=".9"/>
       <path d={maPath(sma200)} fill="none" stroke="#f59e0b" strokeWidth="1.7" opacity=".95"/>
-      {visible.map((c,i)=>{const cx=i*step+step/2,up=c.c>=c.o,top=Math.min(y(c.o),y(c.c)),body=Math.max(2,Math.abs(y(c.o)-y(c.c)));return <g key={`${c.t||i}-${i}`}><line x1={cx} x2={cx} y1={y(c.h)} y2={y(c.l)} stroke={up?'#69d493':'#ff7d7d'} strokeWidth="1.1"/><rect x={cx-step*.28} y={top} width={Math.max(2,step*.56)} height={body} fill={up?'#69d493':'#ff7d7d'} rx="1"/></g>})}
+      {visibleIndices.map(index=>{const c=valid[index],cx=xForIndex(index),up=c.c>=c.o,top=Math.min(y(c.o),y(c.c)),body=Math.max(2,Math.abs(y(c.o)-y(c.c)));return <g key={`${c.t||index}-${index}`}><line x1={cx} x2={cx} y1={y(c.h)} y2={y(c.l)} stroke={up?'#69d493':'#ff7d7d'} strokeWidth="1.1"/><rect x={cx-step*.28} y={top} width={Math.max(2,step*.56)} height={body} fill={up?'#69d493':'#ff7d7d'} rx="1"/></g>})}
       {cursor&&<><line x1={cursor.x} x2={cursor.x} y1="0" y2="460" stroke="#8d99aa" strokeWidth="1" strokeDasharray="4 5" opacity=".7"/><line x1="0" x2="1000" y1={cursor.y} y2={cursor.y} stroke="#8d99aa" strokeWidth="1" strokeDasharray="4 5" opacity=".7"/></>}
-      <line x1="0" x2="1000" y1={y(price)} y2={y(price)} stroke="#e5e7eb" strokeDasharray="3 5" opacity=".55"/><rect x="912" y={Math.max(2,Math.min(438,y(price)-11))} width="80" height="22" rx="4" fill="#e5e7eb"/><text x="920" y={Math.max(18,Math.min(454,y(price)+5))} fill="#111827" fontSize="13" fontWeight="800">{price.toFixed(2)}</text>
+      {latestVisible&&<><line x1="0" x2="1000" y1={y(price)} y2={y(price)} stroke="#e5e7eb" strokeDasharray="3 5" opacity=".55"/><rect x="912" y={Math.max(2,Math.min(438,y(price)-11))} width="80" height="22" rx="4" fill="#e5e7eb"/><text x="920" y={Math.max(18,Math.min(454,y(price)+5))} fill="#111827" fontSize="13" fontWeight="800">{price.toFixed(2)}</text></>}
     </svg>
   </div>;
 }
@@ -292,8 +306,8 @@ export default function MarketDashboard({broadcast=false}:{broadcast?:boolean}){
         <div className="row"><div><div className="label">{mt4Live?'ALPARI MT4 XAUUSD':'TEMP ONLINE GOLD FEED'}</div><div className="price">{price.toFixed(2)}</div><div className={change>=0?'positive':'negative'}>{previousClose?`${change>=0?'+':''}${change.toFixed(2)} vs prev close`:`Bid ${mt4Latest?.bid?.toFixed(2)||'--'} • Ask ${mt4Latest?.ask?.toFixed(2)||'--'}`}</div></div><div style={{textAlign:'right'}}><div className="label">Market Bias</div><strong className={biasClass}>{state.bias}</strong><div className="muted">Setup strength {state.confidence}%</div></div></div>
         <div className="stat-grid"><div className="stat"><span className="label">DXY</span><strong>{market?.dxy?.price?.toFixed(2)||'--'}</strong></div><div className="stat"><span className="label">US 10Y</span><strong>{market?.us10y?.price?`${market.us10y.price.toFixed(2)}%`:'--'}</strong></div><div className="stat"><span className="label">Active Sessions</span><strong>{openSessions.length?openSessions.join(' + '):'Transition'}</strong></div></div>
         <div className="timeframe-row"><div><div className="label">Candle timeframe</div><div className="timeframe-bar">{TIMEFRAMES.map(tf=><button key={tf.key} className={`timeframe-btn ${timeframe===tf.key?'active':''}`} onClick={()=>setTimeframe(tf.key)}>{tf.label}</button>)}</div></div><div className={`timeframe-source ${mt4CandleReady?'feed-live':'feed-warn'}`}>● {chartSource}</div></div>
-        <CandleChart candles={candles} price={price} state={state} vcprs={vcprs}/>
-        <div className="legend"><span><i className="dot" style={{background:'#69d493'}}/>{mt4CandleReady?`MT4 ${timeframe} candles`:`Temporary ${timeframe} candles`}</span><span><i className="dot" style={{background:'#4ade80'}}/>SMA44</span><span><i className="dot" style={{background:'#38bdf8'}}/>EMA99</span><span><i className="dot" style={{background:'#f59e0b'}}/>SMA200</span><span><i className="dot" style={{background:'#d9b54a'}}/>Confirmed VCPR Pivot</span><span className="muted">Wheel = zoom • drag = pan • crosshair = OHLC • only M5-validated VCPRs are shown.</span></div>
+        <CandleChart key={timeframe} candles={candles} price={price} state={state} vcprs={vcprs}/>
+        <div className="legend"><span><i className="dot" style={{background:'#69d493'}}/>{mt4CandleReady?`MT4 ${timeframe} candles`:`Temporary ${timeframe} candles`}</span><span><i className="dot" style={{background:'#4ade80'}}/>SMA44</span><span><i className="dot" style={{background:'#38bdf8'}}/>EMA99</span><span><i className="dot" style={{background:'#f59e0b'}}/>SMA200</span><span><i className="dot" style={{background:'#d9b54a'}}/>Confirmed VCPR Pivot</span><span className="muted">Wheel = zoom • drag = free pan • empty future space is preserved • crosshair = OHLC.</span></div>
       </div>
 
       {!compact&&<div className="side">
