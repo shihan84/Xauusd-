@@ -27,6 +27,50 @@ Initial rollout: visualisation -> signal classification -> historical backtest -
 - High-impact economic-news lock.
 - Spread, feed freshness and broker execution state.
 
+## Trading profiles
+The engine supports multiple holding horizons, but V1 prioritizes intraday trading.
+
+### INTRADAY profile — primary
+Purpose: capture same-day XAUUSD opportunities during active market sessions without carrying unnecessary overnight exposure.
+
+Timeframe hierarchy:
+- H4 = directional/structural context.
+- H1 = intraday working bias.
+- M15 = primary setup chart.
+- M5 = primary trigger/entry chart.
+- M1 = optional refinement only; never mandatory for all setups.
+
+Typical holding horizon:
+- approximately 15 minutes to several hours,
+- configurable by strategy and volatility regime,
+- normally flat by the end of the defined trading day/session unless a separately validated carry rule exists.
+
+Primary intraday sessions:
+- Asia range formation,
+- London open and London continuation,
+- London/New York overlap,
+- New York open and U.S. data window.
+
+Intraday engine requirements:
+- detect Asia/London/New York highs and lows in real time,
+- calculate PDH/PDL and previous close,
+- identify session sweep, breakout, reclaim, retest and acceptance events,
+- track distance to nearest structural target,
+- prevent entries when reward space is too small,
+- use news lock around high-impact U.S. events,
+- use time-based invalidation so stale intraday setups expire,
+- support partial profit, break-even and structure-based trailing policies for demo testing.
+
+Intraday position policy:
+- one overlapping directional setup should create one exposure, not duplicate positions,
+- opposite-direction setups while a position is active require explicit tested reversal/exit logic,
+- do not average into a losing trade by default,
+- no martingale sizing,
+- no automatic overnight carry in the primary intraday profile.
+
+### SWING / extended profile — later
+H4/D1-led trades may be researched separately later. Their statistics, risk limits and exit logic must not be mixed with the primary intraday results.
+
 ## Moving-average interpretation
 Moving averages are context/gateway tools, not standalone signals.
 
@@ -277,6 +321,73 @@ Possible mean targets:
 
 This strategy must have stricter risk limits and its own acceptance threshold. It must never be merged into the trend strategies during evaluation.
 
+## Strategy J — Intraday Opening Drive
+Purpose: capture a genuine directional expansion after London or New York opens while filtering the common first-move fakeout.
+
+### Bullish candidate
+1. Pre-open range is defined from recent M5/M15 structure.
+2. Price breaks the range high after the target session opens.
+3. Break is confirmed by a closed candle, not wick alone.
+4. Price either holds above the range or performs a shallow retest/reclaim.
+5. H1 bias is bullish or non-conflicting.
+6. No nearby PDH/VCPR/major resistance makes reward space inadequate.
+7. News lock is clear, or the strategy is explicitly running a separately tested post-news variant.
+
+### Bearish candidate
+Mirror below the pre-open range low.
+
+### Test dimensions
+- London vs New York,
+- first 15/30/60 minutes,
+- pre-open range size,
+- trend aligned vs counter-trend,
+- breakout body size,
+- immediate continuation vs retest entry.
+
+## Strategy K — Intraday Range Rotation
+Purpose: trade rotational conditions on days when XAUUSD is not accepting directional breakout, while preventing repeated fading of a trend day.
+
+### Context
+- H1/H4 not strongly directional,
+- session range is established,
+- repeated closes remain inside the range,
+- no active high-impact catalyst is driving expansion.
+
+### Long candidate
+1. Price reaches/sweeps the lower intraday range boundary.
+2. It reclaims the boundary on M5/M15.
+3. Local bearish momentum fails.
+4. Target is range midpoint first, then opposite range edge only if conditions remain rotational.
+
+### Short candidate
+Mirror from the upper range boundary.
+
+### Hard protection
+Disable new range-fade entries if price gains confirmed acceptance outside the range or volatility expands beyond the tested regime threshold.
+
+## Intraday management policy
+Every intraday strategy must define and backtest management separately from entry logic.
+
+Candidate management variants:
+- fixed structural SL with fixed R targets,
+- TP1 partial then stop to break-even,
+- TP1/TP2 partials plus trailing remainder,
+- trail behind M5 swing structure,
+- time stop if price fails to progress within N bars,
+- session-end flatten,
+- cancel pending setup after N bars or after its originating session changes.
+
+Do not assume break-even movement always improves expectancy; test it per strategy.
+
+For every intraday trade record:
+- entry session,
+- entry clock time,
+- exit clock time,
+- holding minutes,
+- MFE/MAE,
+- session state at exit,
+- whether target/SL/time-stop/session-close caused exit.
+
 ## Strategy conflict policy
 Multiple strategies may detect the same market event. The engine must not open duplicate positions for overlapping setups.
 
@@ -387,7 +498,10 @@ Also compare:
 - first half vs second half of session,
 - high/normal/low volatility,
 - unresolved vs revisited VCPR,
-- isolated level vs multi-level confluence.
+- isolated level vs multi-level confluence,
+- intraday holding-time bucket,
+- London vs New York vs overlap,
+- same-day exit vs any tested extended hold.
 
 Use out-of-sample validation and avoid selecting parameters solely because they maximize historical profit.
 
@@ -406,19 +520,23 @@ Exact thresholds remain configurable until we have enough broker-native history.
 1. Complete live indicator/level calculation: SMA44, EMA99, SMA200, PDH/PDL, PWH/PWL and session highs/lows.
 2. Add MA relationship/event classification.
 3. Add reusable level-event classifiers: breakout, reclaim, rejection, sweep, retest and acceptance.
-4. Build Strategy A Trend Pullback in shadow mode.
-5. Build Strategy B Breakout + Retest.
-6. Build Strategy C Failed Breakout / Reversal.
-7. Build Strategy D VCPR Reaction.
-8. Build Strategy E Session Liquidity Sweep.
-9. Build Strategy F MA Compression -> Expansion.
-10. Build Strategy G Previous Day Level Reclaim.
-11. Build Strategy H Trend Continuation After Session Break.
-12. Keep Strategy I Mean Reversion research-only until independently validated.
-13. Add historical backtest runner shared by all strategies.
-14. Add strategy conflict/arbitration layer.
-15. Add macro confirmation and news veto.
-16. Promote only validated strategies to demo execution.
+4. Add intraday clock/session engine with setup expiry and same-day trade policy.
+5. Build Strategy A Trend Pullback in shadow mode.
+6. Build Strategy B Breakout + Retest.
+7. Build Strategy C Failed Breakout / Reversal.
+8. Build Strategy D VCPR Reaction.
+9. Build Strategy E Session Liquidity Sweep.
+10. Build Strategy F MA Compression -> Expansion.
+11. Build Strategy G Previous Day Level Reclaim.
+12. Build Strategy H Trend Continuation After Session Break.
+13. Build Strategy J Intraday Opening Drive.
+14. Build Strategy K Intraday Range Rotation.
+15. Keep Strategy I Mean Reversion research-only until independently validated.
+16. Add historical backtest runner shared by all strategies.
+17. Add intraday management/time-stop/session-close variants to backtests.
+18. Add strategy conflict/arbitration layer.
+19. Add macro confirmation and news veto.
+20. Promote only validated strategies to demo execution.
 
 ## Database policy
 No Supabase schema change is required merely to calculate moving averages or classify live setups. Use existing `market_candles` and `market_latest` as source data.
