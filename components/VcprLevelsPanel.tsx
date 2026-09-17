@@ -10,6 +10,7 @@ type VcprRow = {
   first_later_touch: number | string | null;
   validation_status: string;
   virgin_on_day: boolean;
+  source: string | null;
 };
 
 type VcprLevel = {
@@ -17,6 +18,7 @@ type VcprLevel = {
   pivot: number;
   touched: boolean;
   firstLaterTouch: number | string | null;
+  source: string;
 };
 
 type PriceRow = {
@@ -68,6 +70,12 @@ function distanceLabel(pivot: number, price: number | null) {
   return `${distance >= 0 ? '+' : ''}${distance.toFixed(2)}`;
 }
 
+function sourceLabel(source: string) {
+  if (source === 'MT4') return 'ALPARI MT4';
+  if (source === 'V3_RESEARCH') return 'V3';
+  return source || 'UNKNOWN';
+}
+
 export default function VcprLevelsPanel() {
   const [levels, setLevels] = useState<VcprLevel[]>([]);
   const [price, setPrice] = useState<number | null>(null);
@@ -85,7 +93,7 @@ export default function VcprLevelsPanel() {
         const supabase = getSupabaseBrowserClient();
         const { data, error: queryError } = await supabase
           .from('vcpr_history')
-          .select('origin_date,pivot,later_touched,first_later_touch,validation_status,virgin_on_day')
+          .select('origin_date,pivot,later_touched,first_later_touch,validation_status,virgin_on_day,source')
           .eq('symbol', 'XAUUSD')
           .eq('virgin_on_day', true)
           .eq('validation_status', 'M5_VALIDATED')
@@ -99,7 +107,8 @@ export default function VcprLevelsPanel() {
             date: row.origin_date,
             pivot: Number(row.pivot),
             touched: Boolean(row.later_touched),
-            firstLaterTouch: row.first_later_touch
+            firstLaterTouch: row.first_later_touch,
+            source: String(row.source || 'UNKNOWN')
           }))
           .filter(row => Number.isFinite(row.pivot));
 
@@ -166,6 +175,8 @@ export default function VcprLevelsPanel() {
 
   const unresolved = useMemo(() => levels.filter(level => !level.touched), [levels]);
   const revisited = useMemo(() => levels.filter(level => level.touched), [levels]);
+  const alpari = useMemo(() => levels.filter(level => level.source === 'MT4'), [levels]);
+  const v3 = useMemo(() => levels.filter(level => level.source === 'V3_RESEARCH'), [levels]);
 
   const nearestAbove = useMemo(() => {
     if (!price) return null;
@@ -212,7 +223,7 @@ export default function VcprLevelsPanel() {
             <div className="label">PERMANENT VCPR S/R MAP</div>
             <h2 style={{ margin: '5px 0 4px', fontSize: 21 }}>Historical VCPR Pivot Levels</h2>
             <div className="muted" style={{ maxWidth: 760 }}>
-              A confirmed VCPR remains a structural reference after its first revisit. Revisited levels stay visible; they are not treated as fresh strategy entries.
+              A confirmed VCPR remains a structural reference after its first revisit. Revisited levels stay visible; they are not treated as fresh strategy entries. Alpari MT4 rows are broker-authoritative; V3 rows are the validated historical research map.
             </div>
           </div>
           <div style={{ textAlign: 'right' }}>
@@ -238,17 +249,27 @@ export default function VcprLevelsPanel() {
             <div className="muted">Still monitored as S/R</div>
           </div>
           <div style={cardStyle}>
+            <div className="label">Alpari MT4</div>
+            <strong style={{ fontSize: 26, color: '#69d493' }}>{alpari.length}</strong>
+            <div className="muted">Broker-authoritative</div>
+          </div>
+          <div style={cardStyle}>
+            <div className="label">V3</div>
+            <strong style={{ fontSize: 26, color: '#b8a7ff' }}>{v3.length}</strong>
+            <div className="muted">Historical research levels</div>
+          </div>
+          <div style={cardStyle}>
             <div className="label">Nearest VCPR above</div>
             <strong style={{ fontSize: 22 }}>{nearestAbove ? nearestAbove.pivot.toFixed(2) : '—'}</strong>
             <div className="muted">
-              {nearestAbove ? `${nearestAbove.touched ? 'REVISITED' : 'UNRESOLVED'} • ${distanceLabel(nearestAbove.pivot, price)}` : 'No level above'}
+              {nearestAbove ? `${nearestAbove.touched ? 'REVISITED' : 'UNRESOLVED'} • ${sourceLabel(nearestAbove.source)} • ${distanceLabel(nearestAbove.pivot, price)}` : 'No level above'}
             </div>
           </div>
           <div style={cardStyle}>
             <div className="label">Nearest VCPR below</div>
             <strong style={{ fontSize: 22 }}>{nearestBelow ? nearestBelow.pivot.toFixed(2) : '—'}</strong>
             <div className="muted">
-              {nearestBelow ? `${nearestBelow.touched ? 'REVISITED' : 'UNRESOLVED'} • ${distanceLabel(nearestBelow.pivot, price)}` : 'No level below'}
+              {nearestBelow ? `${nearestBelow.touched ? 'REVISITED' : 'UNRESOLVED'} • ${sourceLabel(nearestBelow.source)} • ${distanceLabel(nearestBelow.pivot, price)}` : 'No level below'}
             </div>
           </div>
         </div>
@@ -273,10 +294,10 @@ export default function VcprLevelsPanel() {
 
         {!loading && !error && (
           <div style={{ overflowX: 'auto', border: '1px solid #1f2d3d', borderRadius: 10 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 930 }}>
               <thead>
                 <tr style={{ background: '#0b1118', textAlign: 'left' }}>
-                  {['Origin', 'PP level', 'Status', 'Position vs price', 'Distance', 'First revisit (IST)'].map(label => (
+                  {['Origin', 'PP level', 'Status', 'Source', 'Position vs price', 'Distance', 'First revisit (IST)'].map(label => (
                     <th key={label} style={{ padding: '11px 12px', fontSize: 12, color: '#8d99aa', borderBottom: '1px solid #1f2d3d' }}>{label}</th>
                   ))}
                 </tr>
@@ -284,8 +305,9 @@ export default function VcprLevelsPanel() {
               <tbody>
                 {visibleLevels.map(level => {
                   const above = price != null ? level.pivot >= price : null;
+                  const isMt4 = level.source === 'MT4';
                   return (
-                    <tr key={`${level.date}-${level.pivot}`} style={{ borderBottom: '1px solid #172331' }}>
+                    <tr key={`${level.date}-${level.pivot}-${level.source}`} style={{ borderBottom: '1px solid #172331' }}>
                       <td style={{ padding: '11px 12px' }}>{formatOriginDate(level.date)}</td>
                       <td style={{ padding: '11px 12px', fontWeight: 800 }}>{level.pivot.toFixed(2)}</td>
                       <td style={{ padding: '11px 12px' }}>
@@ -302,6 +324,20 @@ export default function VcprLevelsPanel() {
                           {level.touched ? 'REVISITED' : 'UNRESOLVED'}
                         </span>
                       </td>
+                      <td style={{ padding: '11px 12px' }}>
+                        <span style={{
+                          display: 'inline-block',
+                          padding: '4px 8px',
+                          borderRadius: 999,
+                          fontSize: 11,
+                          fontWeight: 800,
+                          color: isMt4 ? '#8ff0b4' : '#c9bdff',
+                          background: isMt4 ? 'rgba(65,180,110,.12)' : 'rgba(130,105,210,.13)',
+                          border: `1px solid ${isMt4 ? '#2e6c49' : '#54458b'}`
+                        }}>
+                          {sourceLabel(level.source)}
+                        </span>
+                      </td>
                       <td style={{ padding: '11px 12px' }}>{above == null ? '—' : above ? 'ABOVE PRICE' : 'BELOW PRICE'}</td>
                       <td style={{ padding: '11px 12px', fontVariantNumeric: 'tabular-nums' }}>{distanceLabel(level.pivot, price)}</td>
                       <td style={{ padding: '11px 12px' }}>{level.touched ? formatTouchTime(level.firstLaterTouch) : '—'}</td>
@@ -309,7 +345,7 @@ export default function VcprLevelsPanel() {
                   );
                 })}
                 {visibleLevels.length === 0 && (
-                  <tr><td colSpan={6} className="muted" style={{ padding: 18 }}>No VCPR levels in this filter.</td></tr>
+                  <tr><td colSpan={7} className="muted" style={{ padding: 18 }}>No VCPR levels in this filter.</td></tr>
                 )}
               </tbody>
             </table>
@@ -317,7 +353,7 @@ export default function VcprLevelsPanel() {
         )}
 
         <div className="muted" style={{ marginTop: 10, fontSize: 12 }}>
-          The table is sorted by distance from live price and shows the nearest 30 levels. “Revisited” is a historical status only; it does not imply a new trade signal.
+          The table is sorted by distance from live price and shows the nearest 30 levels. “Revisited” is a historical status only; it does not imply a new trade signal. Alpari MT4 is authoritative where it overlaps V3.
         </div>
       </div>
     </section>
