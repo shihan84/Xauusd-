@@ -8,7 +8,7 @@ import pandas as pd
 BASE_DIR = Path(r"E:\xauusd")
 DEFAULT_REPLAY = BASE_DIR / "data" / "historical" / "XAUUSD_VCPR_REACTION_BACKTEST_V1.csv"
 DEFAULT_V3 = BASE_DIR / "data" / "historical" / "XAUUSD_VCPR_RESULTS_V3_FINAL.csv"
-DEFAULT_OUT = BASE_DIR / "data" / "historical" / "XAUUSD_VCPR_REACTION_VALIDATION_V2.csv"
+DEFAULT_OUT = BASE_DIR / "data" / "historical" / "XAUUSD_VCPR_REACTION_VALIDATION_V3.csv"
 
 BOOTSTRAP_SAMPLES = 2000
 RNG_SEED = 84
@@ -71,16 +71,16 @@ def load_data(replay_path: Path, v3_path: Path) -> pd.DataFrame:
         v3 = v3[keep].drop_duplicates(subset=["origin_date", "pivot"])
         df = df.merge(v3, on=["origin_date", "pivot"], how="left")
 
-    return df
+    return df.sort_values("touch_time_utc").reset_index(drop=True)
 
 
-def cluster_ci(df: pd.DataFrame) -> tuple[float, float]:
-    if df.empty:
+def cluster_ci(resolved: pd.DataFrame) -> tuple[float, float]:
+    if resolved.empty:
         return np.nan, np.nan
-    groups = {k: g["is_rejection"].to_numpy(float) for k, g in df.groupby("level_key")}
+    groups = {k: g["is_rejection"].to_numpy(float) for k, g in resolved.groupby("level_key")}
     keys = list(groups)
     if len(keys) < 2:
-        p = float(df["is_rejection"].mean())
+        p = float(resolved["is_rejection"].mean())
         return p, p
 
     rng = np.random.default_rng(RNG_SEED)
@@ -93,20 +93,15 @@ def cluster_ci(df: pd.DataFrame) -> tuple[float, float]:
     return float(lo), float(hi)
 
 
-def one_per_level_first(df: pd.DataFrame) -> pd.DataFrame:
-    return (
-        df.sort_values("touch_time_utc")
-        .drop_duplicates(subset=["level_key"], keep="first")
-        .copy()
-    )
+def first_per_level_all_outcomes(df: pd.DataFrame) -> pd.DataFrame:
+    # Critical: deduplicate BEFORE removing ambiguous outcomes.
+    # Otherwise an ambiguous true first touch can be silently replaced by a later resolved touch.
+    return df.drop_duplicates(subset=["level_key"], keep="first").copy()
 
 
-def one_per_level_year(df: pd.DataFrame) -> pd.DataFrame:
-    return (
-        df.sort_values("touch_time_utc")
-        .drop_duplicates(subset=["level_key", "touch_year"], keep="first")
-        .copy()
-    )
+def first_per_level_year_all_outcomes(df: pd.DataFrame) -> pd.DataFrame:
+    # Same guardrail for first touch within each level/year.
+    return df.drop_duplicates(subset=["level_key", "touch_year"], keep="first").copy()
 
 
 def candidate_masks(df: pd.DataFrame) -> dict[str, pd.Series]:
@@ -124,65 +119,77 @@ def candidate_masks(df: pd.DataFrame) -> dict[str, pd.Series]:
     return masks
 
 
-def summarize_slice(name: str, df: pd.DataFrame, sample_mode: str, period: str) -> dict:
-    n = len(df)
-    if n == 0:
-        return {
-            "candidate": name,
-            "sample_mode": sample_mode,
-            "period": period,
-            "n": 0,
-            "unique_levels": 0,
-            "rejection_rate": np.nan,
-            "ci_low": np.nan,
-            "ci_high": np.nan,
-        }
-    lo, hi = cluster_ci(df)
+def summarize_slice(name: str, selected: pd.DataFrame, sample_mode: str, period: str) -> dict:
+    total_n = len(selected)
+    resolved = selected.loc[selected["resolved"]].copy()
+    resolved_n = len(resolved)
+    ambiguous_n = total_n - resolved_n
+
+    if resolved_n:
+        rejection_rate = float(resolved["is_rejection"].mean())
+        lo, hi = cluster_ci(resolved)
+        unique_levels_resolved = int(resolved["level_key"].nunique())
+    else:
+        rejection_rate = np.nan
+        lo, hi = np.nan, np.nan
+        unique_levels_resolved = 0
+
     return {
         "candidate": name,
         "sample_mode": sample_mode,
         "period": period,
-        "n": n,
-        "unique_levels": int(df["level_key"].nunique()),
-        "rejection_rate": float(df["is_rejection"].mean()),
+        "selected_n": total_n,
+        "resolved_n": resolved_n,
+        "ambiguous_n": ambiguous_n,
+        "ambiguous_rate": (ambiguous_n / total_n) if total_n else np.nan,
+        "unique_levels_selected": int(selected["level_key"].nunique()) if total_n else 0,
+        "unique_levels_resolved": unique_levels_resolved,
+        "rejections": int(resolved["is_rejection"].sum()) if resolved_n else 0,
+        "breakthroughs": int((~resolved["is_rejection"]).sum()) if resolved_n else 0,
+        "rejection_rate": rejection_rate,
         "ci_low": lo,
         "ci_high": hi,
     }
 
 
 def print_row(row: dict):
-    if row["n"] == 0:
+    if row["selected_n"] == 0:
         return
+    rej = row["rejection_rate"]
+    rej_text = "   n/a" if pd.isna(rej) else f"{rej:6.2%}"
+    ci_text = "n/a" if pd.isna(row["ci_low"]) else f"{row['ci_low']:.2%}-{row['ci_high']:.2%}"
     print(
         f"{row['candidate']:22s} "
-        f"{row['sample_mode']:16s} "
+        f"{row['sample_mode']:18s} "
         f"{row['period']:10s} "
-        f"N={row['n']:4d} "
-        f"levels={row['unique_levels']:3d} "
-        f"rej={row['rejection_rate']:6.2%} "
-        f"CI={row['ci_low']:6.2%}-{row['ci_high']:6.2%}"
+        f"selected={row['selected_n']:4d} "
+        f"resolved={row['resolved_n']:4d} "
+        f"amb={row['ambiguous_rate']:6.2%} "
+        f"levels={row['unique_levels_selected']:3d} "
+        f"rej={rej_text} "
+        f"CI={ci_text}"
     )
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Robustness validation for VCPR reaction replay.")
+    parser = argparse.ArgumentParser(description="Corrected robustness validation for VCPR reaction replay.")
     parser.add_argument("--replay", default=str(DEFAULT_REPLAY))
     parser.add_argument("--v3", default=str(DEFAULT_V3))
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     args = parser.parse_args()
 
     df = load_data(Path(args.replay), Path(args.v3))
-    resolved = df.loc[df["resolved"]].copy()
 
-    print("XAUUSD VCPR Reaction Validation V2")
-    print("Goal: check whether apparent historical subgroups survive de-duplication and time splits.")
-    print("This is post-hoc validation, not proof of a trading edge.")
+    print("XAUUSD VCPR Reaction Validation V3")
+    print("Correction: first-touch samples are selected from ALL outcomes before ambiguous rows are excluded.")
+    print("This prevents a later resolved touch from replacing an ambiguous true first touch.")
+    print("This remains post-hoc research, not proof of a trading edge.")
     print()
 
     sample_modes = {
-        "ALL_EPISODES": resolved,
-        "FIRST_PER_LEVEL": one_per_level_first(resolved),
-        "FIRST_PER_LEVEL_YEAR": one_per_level_year(resolved),
+        "ALL_EPISODES": df,
+        "FIRST_PER_LEVEL": first_per_level_all_outcomes(df),
+        "FIRST_LEVEL_YEAR": first_per_level_year_all_outcomes(df),
     }
 
     periods = {
@@ -204,13 +211,13 @@ def main():
     out = pd.DataFrame(rows)
     out.to_csv(args.out, index=False)
 
-    print("=== ROBUSTNESS TABLE ===")
+    print("=== CORRECTED ROBUSTNESS TABLE ===")
     for row in rows:
         if row["period"] in {"ALL", "2026"}:
             print_row(row)
 
     print()
-    print("=== FIRST-TOUCH-ONLY YEAR STABILITY ===")
+    print("=== TRUE FIRST-TOUCH YEAR STABILITY ===")
     first = sample_modes["FIRST_PER_LEVEL"]
     masks = candidate_masks(first)
     for candidate, cmask in masks.items():
@@ -223,11 +230,11 @@ def main():
 
     print(f"Detailed validation CSV: {args.out}")
     print()
-    print("Decision rule:")
-    print("- Prefer candidates whose direction is stable in first-touch-only samples, not just repeated episodes.")
-    print("- Require meaningful sample size and multiple levels.")
-    print("- Treat 2026 cautiously because M5 ambiguity was unusually high in the replay.")
-    print("- Any surviving candidate remains research-only until live forward data independently confirms it.")
+    print("Decision guardrails:")
+    print("- First-touch rows now preserve ambiguous true first episodes instead of skipping them.")
+    print("- Judge rejection share together with ambiguity, sample size, unique levels, and year stability.")
+    print("- Small subgroup percentages are descriptive only.")
+    print("- Any candidate still requires independent live forward confirmation.")
 
 
 if __name__ == "__main__":
