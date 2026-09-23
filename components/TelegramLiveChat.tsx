@@ -1,52 +1,96 @@
 "use client";
 
 import { useEffect, useRef, useState } from 'react';
+import { getSupabaseBrowserClient } from '../lib/supabaseClient';
 
 type TelegramMessage = {
-  id: number;
-  updateId?: number;
-  chatId: string;
+  chat_id: string;
+  message_id: number;
+  update_id?: number | null;
   sender: string;
-  username?: string;
-  text: string;
-  date: number;
+  username?: string | null;
+  body: string;
+  sent_at: string;
+};
+
+type IntegrationStatus = {
+  status: 'CONNECTED'|'DEGRADED'|'DISCONNECTED'|'SETUP_REQUIRED'|string;
+  last_ok_at: string | null;
+  last_error: string | null;
+  updated_at: string;
 };
 
 export default function TelegramLiveChat({ compact = false }: { compact?: boolean }) {
   const [messages, setMessages] = useState<TelegramMessage[]>([]);
-  const [status, setStatus] = useState<'connecting'|'live'|'setup'|'error'>('connecting');
+  const [integration, setIntegration] = useState<IntegrationStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    let stopped = false;
+    let active = true;
+    const supabase = getSupabaseBrowserClient();
 
-    async function load() {
+    const load = async () => {
       try {
-        const res = await fetch('/api/telegram/messages', { cache: 'no-store' });
-        if (!res.ok) {
-          setStatus(res.status === 503 ? 'setup' : 'error');
-          return;
-        }
-        const data = await res.json();
-        if (!stopped) {
-          setMessages(Array.isArray(data.messages) ? data.messages : []);
-          setStatus('live');
-        }
-      } catch {
-        if (!stopped) setStatus('error');
-      }
-    }
+        const [messageResult, statusResult] = await Promise.all([
+          supabase
+            .from('telegram_public_messages')
+            .select('chat_id,message_id,update_id,sender,username,body,sent_at')
+            .order('sent_at', { ascending: false })
+            .limit(40),
+          supabase
+            .from('integration_status')
+            .select('status,last_ok_at,last_error,updated_at')
+            .eq('integration', 'telegram_group')
+            .maybeSingle(),
+        ]);
 
-    load();
-    const timer = window.setInterval(load, 2500);
-    return () => { stopped = true; window.clearInterval(timer); };
+        if (messageResult.error) throw messageResult.error;
+        if (statusResult.error) throw statusResult.error;
+
+        if (active) {
+          setMessages(((messageResult.data || []) as TelegramMessage[]).slice().reverse());
+          setIntegration((statusResult.data || null) as IntegrationStatus | null);
+          setError(null);
+        }
+      } catch (e) {
+        if (active) setError(e instanceof Error ? e.message : 'Telegram bridge unavailable');
+      }
+    };
+
+    void load();
+
+    const messageChannel = supabase
+      .channel('telegram-public-messages')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'telegram_public_messages' }, () => void load())
+      .subscribe();
+
+    const statusChannel = supabase
+      .channel('telegram-integration-status')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'integration_status', filter: 'integration=eq.telegram_group' }, () => void load())
+      .subscribe();
+
+    return () => {
+      active = false;
+      try { supabase.removeChannel(messageChannel); } catch {}
+      try { supabase.removeChannel(statusChannel); } catch {}
+    };
   }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [messages]);
 
-  const statusText = status === 'live' ? '● LIVE' : status === 'setup' ? 'SETUP REQUIRED' : status === 'error' ? 'CONNECTION ERROR' : 'CONNECTING';
+  const lastOkMs = integration?.last_ok_at ? new Date(integration.last_ok_at).getTime() : 0;
+  const heartbeatFresh = lastOkMs > 0 && Date.now() - lastOkMs < 120000;
+  const connected = integration?.status === 'CONNECTED' && heartbeatFresh;
+  const statusText = connected
+    ? '● CONNECTED'
+    : integration?.status === 'DEGRADED'
+      ? '● DEGRADED'
+      : integration
+        ? '● OFFLINE'
+        : '● WAITING FOR BRIDGE';
 
   return (
     <div className={`telegram-panel ${compact ? 'telegram-compact' : ''}`}>
@@ -55,32 +99,40 @@ export default function TelegramLiveChat({ compact = false }: { compact?: boolea
           <div className="label">Telegram Public Group</div>
           <strong>LIVE TRADER CHAT</strong>
         </div>
-        <span className={`telegram-status telegram-${status}`}>{statusText}</span>
+        <span className={`telegram-status ${connected ? 'telegram-live' : integration?.status === 'DEGRADED' ? 'telegram-error' : 'telegram-setup'}`}>
+          {statusText}
+        </span>
       </div>
 
       <div className="telegram-messages">
-        {messages.length === 0 && (
+        {error && <div className="telegram-empty">Telegram bridge error: {error}</div>}
+        {!error && messages.length === 0 && (
           <div className="telegram-empty">
-            {status === 'setup' ? 'Connect the Telegram bot and group to start the live public chat.' : 'Waiting for public group messages…'}
+            {connected
+              ? 'Telegram bridge connected. Waiting for public group messages…'
+              : 'Local Telegram bridge is not reporting a fresh heartbeat.'}
           </div>
         )}
+
         {messages.map((m) => {
-          const time = new Date(m.date * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const time = new Date(m.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           return (
-            <div className="telegram-message" key={`${m.id}-${m.date}`}>
+            <div className="telegram-message" key={`${m.chat_id}-${m.message_id}`}>
               <div className="telegram-meta">
                 <strong>{m.sender}</strong>
                 {m.username && <span>@{m.username}</span>}
                 <time>{time}</time>
               </div>
-              <div className="telegram-text">{m.text}</div>
+              <div className="telegram-text">{m.body}</div>
             </div>
           );
         })}
         <div ref={bottomRef} />
       </div>
 
-      <div className="telegram-foot">PUBLIC GROUP • MESSAGES MAY APPEAR ON YOUTUBE LIVE</div>
+      <div className="telegram-foot">
+        PUBLIC GROUP • LOCAL BOT BRIDGE → SUPABASE • NO BOT TOKEN REQUIRED ON VERCEL
+      </div>
     </div>
   );
 }
