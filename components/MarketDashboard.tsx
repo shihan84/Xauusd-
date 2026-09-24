@@ -173,7 +173,7 @@ function CandleChart({ candles, price, state, vcprs }:{candles:Candle[];price:nu
       O {hover.o.toFixed(2)} &nbsp; H {hover.h.toFixed(2)} &nbsp; L {hover.l.toFixed(2)} &nbsp; C {hover.c.toFixed(2)}
     </div>}
     <svg ref={svgRef} viewBox="0 0 1000 460" preserveAspectRatio="none"
-      onWheel={e=>{e.preventDefault();const next=e.deltaY<0?visibleCount-10:visibleCount+10;setVisibleCount(Math.max(20,Math.min(Math.max(90,valid.length+20),next)));}}
+      onWheel={e=>{if(!e.ctrlKey&&!e.metaKey)return;e.preventDefault();const next=e.deltaY<0?visibleCount-10:visibleCount+10;setVisibleCount(Math.max(20,Math.min(Math.max(90,valid.length+20),next)));}}
       onPointerDown={e=>{dragRef.current={x:e.clientX,rightSpaceBars};e.currentTarget.setPointerCapture(e.pointerId)}}
       onPointerUp={()=>{dragRef.current=null}}
       onPointerCancel={()=>{dragRef.current=null}}
@@ -371,7 +371,7 @@ export default function MarketDashboard({broadcast=false}:{broadcast?:boolean}){
         <div className="stat-grid"><div className="stat"><span className="label">DXY</span><strong>{market?.dxy?.price?.toFixed(2)||'--'}</strong></div><div className="stat"><span className="label">US 10Y</span><strong>{market?.us10y?.price?`${market.us10y.price.toFixed(2)}%`:'--'}</strong></div><div className="stat"><span className="label">Active Sessions</span><strong>{openSessions.length?openSessions.join(' + '):'Transition'}</strong></div></div>
         <div className="timeframe-row"><div><div className="label">Candle timeframe</div><div className="timeframe-bar">{TIMEFRAMES.map(tf=><button key={tf.key} className={`timeframe-btn ${timeframe===tf.key?'active':''}`} onClick={()=>setTimeframe(tf.key)}>{tf.label}</button>)}</div></div><div className={`timeframe-source ${mt4CandleReady?'feed-live':'feed-warn'}`}>● {chartSource}</div></div>
         <CandleChart key={timeframe} candles={candles} price={price} state={state} vcprs={vcprs}/>
-        <div className="legend"><span><i className="dot" style={{background:'#69d493'}}/>{mt4CandleReady?`MT4 ${timeframe} candles`:`Temporary ${timeframe} candles`}</span><span><i className="dot" style={{background:'#4ade80'}}/>SMA44</span><span><i className="dot" style={{background:'#38bdf8'}}/>EMA99</span><span><i className="dot" style={{background:'#f59e0b'}}/>SMA200</span><span><i className="dot" style={{background:'#d9b54a'}}/>Confirmed VCPR Pivot</span><span className="muted">Wheel = zoom • drag = free pan • empty future space is preserved • crosshair = OHLC.</span></div>
+        <div className="legend"><span><i className="dot" style={{background:'#69d493'}}/>{mt4CandleReady?`MT4 ${timeframe} candles`:`Temporary ${timeframe} candles`}</span><span><i className="dot" style={{background:'#4ade80'}}/>SMA44</span><span><i className="dot" style={{background:'#38bdf8'}}/>EMA99</span><span><i className="dot" style={{background:'#f59e0b'}}/>SMA200</span><span><i className="dot" style={{background:'#d9b54a'}}/>Confirmed VCPR Pivot</span><span className="muted">Scroll = page • Ctrl+wheel = chart zoom • drag = free pan • crosshair = OHLC.</span></div>
       </div>
 
       {!compact&&<div className="side">
