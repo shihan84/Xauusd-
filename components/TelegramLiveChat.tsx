@@ -24,7 +24,7 @@ export default function TelegramLiveChat({ compact = false }: { compact?: boolea
   const [messages, setMessages] = useState<TelegramMessage[]>([]);
   const [integration, setIntegration] = useState<IntegrationStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const messagesRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -78,7 +78,9 @@ export default function TelegramLiveChat({ compact = false }: { compact?: boolea
   }, []);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const el = messagesRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   const lastOkMs = integration?.last_ok_at ? new Date(integration.last_ok_at).getTime() : 0;
@@ -104,7 +106,7 @@ export default function TelegramLiveChat({ compact = false }: { compact?: boolea
         </span>
       </div>
 
-      <div className="telegram-messages">
+      <div className="telegram-messages" ref={messagesRef}>
         {error && <div className="telegram-empty">Telegram bridge error: {error}</div>}
         {!error && messages.length === 0 && (
           <div className="telegram-empty">
@@ -127,7 +129,6 @@ export default function TelegramLiveChat({ compact = false }: { compact?: boolea
             </div>
           );
         })}
-        <div ref={bottomRef} />
       </div>
 
       <div className="telegram-foot">
