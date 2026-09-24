@@ -5,6 +5,7 @@ import { getSupabaseBrowserClient } from "../lib/supabaseClient";
 
 type SignalRow = {
   id: number;
+  strategy_id: string;
   direction: "BUY" | "SELL";
   signal_time: string;
   broker_time: string | null;
@@ -40,8 +41,8 @@ export default function StrategySignalsPanel() {
     const load = async () => {
       const { data, error: queryError } = await supabase
         .from("strategy_signals")
-        .select("id,direction,signal_time,broker_time,entry_price,stop_price,target1_price,target2_price,score,vcpr_pivot,paper_status,outcome_1r,outcome_2r,mfe_r,mae_r")
-        .eq("strategy_id", "INTRADAY_MTF_V1")
+        .select("id,strategy_id,direction,signal_time,broker_time,entry_price,stop_price,target1_price,target2_price,score,vcpr_pivot,paper_status,outcome_1r,outcome_2r,mfe_r,mae_r")
+        .in("strategy_id", ["INTRADAY_MTF_V1","LIQUIDITY_SWEEP_REVERSAL_V1","SESSION_BREAK_RETEST_V1","COMPRESSION_EXPANSION_V1"])
         .order("signal_time", { ascending: false })
         .limit(12);
 
@@ -73,9 +74,9 @@ export default function StrategySignalsPanel() {
     <section style={{ maxWidth: 1500, margin: "0 auto", padding: "0 22px 36px" }}>
       <div className="panel" style={{ padding: 18 }}>
         <div className="label">PAPER SIGNAL LEDGER</div>
-        <h2 style={{ margin: "5px 0 4px", fontSize: 21 }}>Intraday MTF Paper Trades</h2>
+        <h2 style={{ margin: "5px 0 4px", fontSize: 21 }}>Intraday Paper Trades</h2>
         <div className="muted">
-          Live paper/demo tracking for INTRADAY_MTF_V1. Results are research observations, not live-money execution.
+          Live paper/demo tracking across the active intraday strategies. Results are research observations, not live-money execution.
         </div>
 
         {error && <div className="negative" style={{ marginTop: 14 }}>{error}</div>}
@@ -91,7 +92,7 @@ export default function StrategySignalsPanel() {
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
               <thead>
                 <tr>
-                  {["Time","Dir","Status","Score","Entry","Stop","T1","T2","VCPR","1R","2R","MFE","MAE"].map(h => (
+                  {["Time","Strategy","Dir","Status","Score","Entry","Stop","T1","T2","VCPR","1R","2R","MFE","MAE"].map(h => (
                     <th key={h} style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid #243244" }}>{h}</th>
                   ))}
                 </tr>
@@ -101,6 +102,12 @@ export default function StrategySignalsPanel() {
                   <tr key={row.id}>
                     <td style={{ padding: "9px 10px", borderBottom: "1px solid #172330", whiteSpace: "nowrap" }}>
                       {new Date(row.signal_time).toLocaleString()}
+                    </td>
+                    <td style={{ padding: "9px 10px", borderBottom: "1px solid #172330", whiteSpace: "nowrap" }}>
+                      {row.strategy_id === "INTRADAY_MTF_V1" ? "Trend Pullback" :
+                       row.strategy_id === "LIQUIDITY_SWEEP_REVERSAL_V1" ? "Liquidity Sweep" :
+                       row.strategy_id === "SESSION_BREAK_RETEST_V1" ? "Asia Break/Retest" :
+                       row.strategy_id === "COMPRESSION_EXPANSION_V1" ? "Compression" : row.strategy_id}
                     </td>
                     <td style={{ padding: "9px 10px", borderBottom: "1px solid #172330" }}><strong>{row.direction}</strong></td>
                     <td style={{ padding: "9px 10px", borderBottom: "1px solid #172330" }}>{pretty(row.paper_status)}</td>
