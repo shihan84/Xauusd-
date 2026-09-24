@@ -10,7 +10,18 @@ from intraday_mtf_core import BROKER_TZ, load_env_file
 
 BASE_DIR = Path(r"E:\xauusd")
 ENV_FILE = BASE_DIR / "bridge" / ".env"
-STRATEGY_ID = "INTRADAY_MTF_V1"
+TRACKED_STRATEGIES = (
+    "INTRADAY_MTF_V1",
+    "LIQUIDITY_SWEEP_REVERSAL_V1",
+    "SESSION_BREAK_RETEST_V1",
+    "COMPRESSION_EXPANSION_V1",
+)
+STRATEGY_NAMES = {
+    "INTRADAY_MTF_V1": "Multi-Timeframe Trend Pullback V1",
+    "LIQUIDITY_SWEEP_REVERSAL_V1": "Liquidity Sweep + Reversal V1",
+    "SESSION_BREAK_RETEST_V1": "Asia Range Break + Retest V1",
+    "COMPRESSION_EXPANSION_V1": "MA Compression → Expansion V1",
+}
 SYMBOL = "XAUUSD"
 POLL_SECONDS = 15
 
@@ -61,13 +72,13 @@ def fetch_candidates(url, key):
         headers=headers(key),
         params={
             "select": (
-                "id,event_key,direction,signal_time,broker_time,entry_price,stop_price,"
+                "id,event_key,strategy_id,direction,signal_time,broker_time,entry_price,stop_price,"
                 "target1_price,target2_price,paper_status,outcome_1r,outcome_2r,"
-                "t1_hit_at,t2_hit_at,stop_hit_at,mfe_r,mae_r"
+                "t1_hit_at,t2_hit_at,stop_hit_at,mfe_r,mae_r,payload"
             ),
-            "strategy_id": f"eq.{STRATEGY_ID}",
+            "strategy_id": "in.(" + ",".join(TRACKED_STRATEGIES) + ")",
             "order": "signal_time.desc",
-            "limit": "50",
+            "limit": "100",
         },
         timeout=20,
     )
@@ -176,7 +187,7 @@ def send_telegram(token, chat_id, signal, new_status, out1, out2, mfe_r, mae_r):
     lines = [
         "XAUUSD PAPER TRADE UPDATE",
         "",
-        "Strategy: Multi-Timeframe Trend Pullback V1",
+        f"Strategy: {STRATEGY_NAMES.get(signal.get('strategy_id'), signal.get('strategy_id') or 'XAUUSD Paper Strategy')}",
         f"Direction: {signal['direction']}",
         f"Status: {new_status.replace('_', ' ')}",
         f"Entry: {fmt(signal['entry_price'])}",
@@ -338,7 +349,7 @@ def main():
 
     url, key, token, chat_id = config()
     print(
-        f"Intraday paper trade tracker starting | strategy={STRATEGY_ID} | "
+        f"Intraday paper trade tracker starting | strategies={len(TRACKED_STRATEGIES)} | "
         f"poll={max(5, args.poll)}s",
         flush=True,
     )
