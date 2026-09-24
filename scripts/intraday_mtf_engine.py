@@ -13,6 +13,7 @@ BASE_DIR = Path(r"E:\xauusd")
 ENV_FILE = BASE_DIR / "bridge" / ".env"
 STRATEGY_ID = "INTRADAY_MTF_V1"
 SYMBOL = "XAUUSD"
+SETUP_NOTIFY_STATE = BASE_DIR / "data" / "forward" / "intraday_mtf_setup_notify_state.json"
 
 
 def config():
@@ -228,6 +229,93 @@ def fmt(value):
         return "—"
 
 
+def load_notify_state():
+    if not SETUP_NOTIFY_STATE.exists():
+        return {}
+    try:
+        return json.loads(SETUP_NOTIFY_STATE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_notify_state(payload):
+    SETUP_NOTIFY_STATE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SETUP_NOTIFY_STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(SETUP_NOTIFY_STATE)
+
+
+def telegram_post(token, chat_id, text):
+    if not token or not chat_id:
+        return False
+    response = requests.post(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        data={"chat_id": chat_id, "text": text},
+        timeout=20,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Telegram HTTP {response.status_code}: {response.text[:300]}")
+    return True
+
+
+def send_setup_notification(token, chat_id, result):
+    checks = result.get("checks") or {}
+    vcpr = result.get("vcpr") or {}
+    lines = [
+        "XAUUSD SETUP FORMING",
+        "",
+        f"Direction: {result.get('direction') or 'WAIT'}",
+        f"Setup score: {result.get('score', 0)}/10",
+        f"Price: {fmt(result.get('price'))}",
+        "",
+        f"4H + 1H trend: {'READY' if (checks.get('h4_bull') and checks.get('h1_bull')) or (checks.get('h4_bear') and checks.get('h1_bear')) else 'WAITING'}",
+        f"15M pullback: {'READY' if checks.get('m15_setup') else 'WAITING'}",
+        f"5M entry trigger: {'READY' if checks.get('m5_trigger') else 'WAITING'}",
+        f"Nearby VCPR: {fmt(vcpr.get('nearest_pivot'))} ({str(vcpr.get('context') or 'WATCHING').replace('_', ' ')})",
+        "",
+        "Status: Waiting for 5-minute entry confirmation.",
+        "Paper/demo research only. No trade has been placed.",
+    ]
+    return telegram_post(token, chat_id, "\n".join(lines))
+
+
+def send_setup_ended_notification(token, chat_id, previous_direction, result):
+    state = str(result.get("state") or "WAITING").replace("_", " ")
+    lines = [
+        "XAUUSD SETUP ENDED - NO TRADE",
+        "",
+        f"Previous direction: {previous_direction or '—'}",
+        f"Current state: {state}",
+        f"Reason: {result.get('reason') or 'Setup conditions are no longer complete.'}",
+        "",
+        "No paper trade was recorded.",
+    ]
+    return telegram_post(token, chat_id, "\n".join(lines))
+
+
+def handle_setup_notifications(token, chat_id, result, enabled=True):
+    state_data = load_notify_state()
+    previous_state = state_data.get("last_state")
+    previous_direction = state_data.get("last_direction")
+    current_state = str(result.get("state") or "UNKNOWN")
+    current_direction = result.get("direction")
+    sent = False
+
+    if enabled:
+        if current_state == "SETUP" and previous_state != "SETUP":
+            sent = send_setup_notification(token, chat_id, result)
+        elif previous_state == "SETUP" and current_state not in ("SETUP", "SIGNAL"):
+            sent = send_setup_ended_notification(
+                token, chat_id, previous_direction, result
+            )
+
+    state_data["last_state"] = current_state
+    state_data["last_direction"] = current_direction
+    state_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    save_notify_state(state_data)
+    return sent
+
+
 def send_telegram(token, chat_id, result):
     if not token or not chat_id:
         return False
@@ -251,14 +339,7 @@ def send_telegram(token, chat_id, result):
         "Paper/demo research only. No live order was placed.",
     ]
 
-    response = requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        data={"chat_id": chat_id, "text": "\n".join(lines)},
-        timeout=20,
-    )
-    if not response.ok:
-        raise RuntimeError(f"Telegram HTTP {response.status_code}: {response.text[:300]}")
-    return True
+    return telegram_post(token, chat_id, "\n".join(lines))
 
 
 def one_cycle(url, key, token, chat_id, telegram_enabled=True):
@@ -298,17 +379,26 @@ def one_cycle(url, key, token, chat_id, telegram_enabled=True):
     )
 
     patch_runtime(url, key, result, source_meta)
+    setup_telegram_sent = handle_setup_notifications(
+        token, chat_id, result, enabled=telegram_enabled
+    )
     created = insert_signal(url, key, result)
-    telegram_sent = False
+    signal_telegram_sent = False
     if created and telegram_enabled:
-        telegram_sent = send_telegram(token, chat_id, result)
+        signal_telegram_sent = send_telegram(token, chat_id, result)
+
+    telegram_status = (
+        "SETUP" if setup_telegram_sent
+        else "SIGNAL" if signal_telegram_sent
+        else "NO"
+    )
 
     print(
         f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
         f"STATE={result.get('state')} | DIR={result.get('direction') or '-'} | "
         f"SCORE={result.get('score', 0)} | PRICE={fmt(result.get('price'))} | "
         f"VCPR={(result.get('vcpr') or {}).get('context', '-')} | "
-        f"NEW_SIGNAL={'YES' if created else 'NO'} | TG={'SENT' if telegram_sent else 'NO'}",
+        f"NEW_SIGNAL={'YES' if created else 'NO'} | TG={telegram_status}",
         flush=True,
     )
     print(f"REASON | {result.get('reason')}", flush=True)
