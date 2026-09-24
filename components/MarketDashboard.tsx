@@ -21,6 +21,11 @@ type VcprRow = {
   origin_date:string; pivot:number|string; later_touched:boolean; first_later_touch:number|string|null; validation_status:string; virgin_on_day:boolean;
 };
 type VcprLevel = { date:string; pivot:number; touched:boolean; firstLaterTouch:number|null };
+type IntradayRuntime = {
+  runtime_status:string|null;
+  runtime_updated_at:string|null;
+  runtime_payload:Record<string,any>|null;
+};
 
 const TIMEFRAMES:{key:Timeframe;label:string}[] = [
   {key:'M1',label:'1m'}, {key:'M5',label:'5m'}, {key:'M15',label:'15m'}, {key:'M30',label:'30m'},
@@ -201,6 +206,7 @@ export default function MarketDashboard({broadcast=false}:{broadcast?:boolean}){
   const [mt4Candles,setMt4Candles]=useState<Candle[]>([]);
   const [mt4CandleReady,setMt4CandleReady]=useState(false);
   const [vcprs,setVcprs]=useState<VcprLevel[]>([]);
+  const [intradayRuntime,setIntradayRuntime]=useState<IntradayRuntime|null>(null);
   const [now,setNow]=useState(Date.now());
 
   useEffect(()=>{let active=true;loadLiveState().then(s=>{if(active)setState(s)});const off=subscribeLiveState(setState);return()=>{active=false;off()}},[]);
@@ -221,6 +227,31 @@ export default function MarketDashboard({broadcast=false}:{broadcast?:boolean}){
       }).subscribe();
     } catch {
       setMt4Latest(null);
+    }
+    return()=>{active=false;if(channel){try{getSupabaseBrowserClient().removeChannel(channel)}catch{}}};
+  },[]);
+
+  useEffect(()=>{
+    let active=true;
+    let channel:ReturnType<ReturnType<typeof getSupabaseBrowserClient>['channel']>|null=null;
+    try{
+      const supabase=getSupabaseBrowserClient();
+      const load=()=>{
+        supabase.from('strategy_registry')
+          .select('runtime_status,runtime_updated_at,runtime_payload')
+          .eq('strategy_id','INTRADAY_MTF_V1')
+          .maybeSingle()
+          .then(({data,error})=>{
+            if(active&&!error&&data)setIntradayRuntime(data as IntradayRuntime);
+          });
+      };
+      load();
+      channel=supabase.channel('dashboard-intraday-runtime')
+        .on('postgres_changes',{event:'UPDATE',schema:'public',table:'strategy_registry',filter:'strategy_id=eq.INTRADAY_MTF_V1'},payload=>{
+          if(payload.new)setIntradayRuntime(payload.new as IntradayRuntime);
+        }).subscribe();
+    }catch{
+      setIntradayRuntime(null);
     }
     return()=>{active=false;if(channel){try{getSupabaseBrowserClient().removeChannel(channel)}catch{}}};
   },[]);
@@ -295,6 +326,39 @@ export default function MarketDashboard({broadcast=false}:{broadcast?:boolean}){
   const setupLive=setup.totalCount>0 || setup.updatedAt>0;
   const performanceLive=performance.totalCalls>0 || performance.asOf>0;
   const chartSource=mt4CandleReady?'ALPARI MT4':'TEMP PROXY';
+  const runtimePayload=intradayRuntime?.runtime_payload||{};
+  const runtimeChecks=(runtimePayload.checks||{}) as Record<string,boolean>;
+  const runtimeRisk=(runtimePayload.risk_plan||{}) as Record<string,number|null>;
+  const runtimeVcpr=(runtimePayload.vcpr||{}) as Record<string,any>;
+  const runtimeState=String(intradayRuntime?.runtime_status||'WAITING').toUpperCase();
+  const runtimeDirection=runtimePayload.direction==='BUY'||runtimePayload.direction==='SELL'?String(runtimePayload.direction):'WAIT';
+  const runtimeFresh=Boolean(intradayRuntime?.runtime_updated_at && Date.now()-new Date(intradayRuntime.runtime_updated_at).getTime()<120000);
+  const trendReady=runtimeDirection==='BUY'
+    ? Boolean(runtimeChecks.h4_bull&&runtimeChecks.h1_bull)
+    : runtimeDirection==='SELL'
+      ? Boolean(runtimeChecks.h4_bear&&runtimeChecks.h1_bear)
+      : false;
+  const pullbackReady=Boolean(runtimeChecks.m15_setup);
+  const triggerReady=Boolean(runtimeChecks.m5_trigger);
+  const setupStatusLabel=runtimeState==='SIGNAL'?'TRADE SIGNAL'
+    :runtimeState==='SETUP'?'SETUP FORMING'
+    :runtimeState==='BIAS_FOUND'?'TREND FOUND'
+    :runtimeState==='SCANNING'?'WAITING FOR SETUP'
+    :runtimeState.startsWith('BLOCKED')||runtimeState.startsWith('NO_TRADE')?'NO TRADE'
+    :runtimeState==='DATA_STALE'?'DATA PAUSED'
+    :runtimeState==='WARMING_UP'?'STARTING'
+    :'WAITING';
+  const simpleSetupMessage=runtimeState==='SIGNAL'
+    ?'All conditions are complete. Paper trade has been recorded.'
+    :runtimeState==='SETUP'
+      ?'Trend and pullback are ready. Waiting for the 5-minute entry confirmation.'
+      :runtimeState==='BIAS_FOUND'
+        ?'Trend is clear. Waiting for a clean 15-minute pullback.'
+        :runtimeState.startsWith('BLOCKED')
+          ?'A safety filter rejected this setup. No trade.'
+          :runtimeState==='DATA_STALE'
+            ?'Live market data is stale, so signals are paused.'
+            :'No clean trade setup yet. The engine is watching the market.';
 
   return <main className={broadcast?'broadcast':'shell'}>
     <div className="topbar"><div className="brand"><div className="brand-badge">AU</div><div><h1>XAU/USD GOLD INTELLIGENCE</h1><div className="muted">Live research terminal • {mt4Live?'Alpari MT4 connected':'MT4 reconnecting / backup feed'}</div></div></div><div className={`live-pill ${online?'feed-live':'feed-warn'}`}>● {mt4Live?'MT4 LIVE':online?'BACKUP ONLINE':'BACKUP DATA'} • {state.mode}</div></div>
@@ -312,11 +376,49 @@ export default function MarketDashboard({broadcast=false}:{broadcast?:boolean}){
 
       {!compact&&<div className="side">
         <TelegramLiveChat compact={broadcast}/>
-        <div className="panel card setup-card"><div className="row"><div><div className="label">Official Setup Engine • {setup.symbol} {setup.timeframe}</div><h3 className="setup-title">{setup.direction} {setup.status.replaceAll('_',' ')}</h3></div><span className="grade">{setup.grade}</span></div><div className="gateway-number">{setup.passedCount} <span>/ {setup.totalCount || '—'} gateways</span></div><div className="progress"><i style={{width:`${setupPct}%`}}/></div><div className="mini-grid"><div><span>Mandatory</span><strong className={setup.mandatoryTotal>0&&setup.mandatoryPassed===setup.mandatoryTotal?'positive':'neutral'}>{setup.mandatoryPassed}/{setup.mandatoryTotal || '—'} {setup.mandatoryTotal>0&&setup.mandatoryPassed===setup.mandatoryTotal?'PASS':'WAIT'}</strong></div><div><span>Final Trigger</span><strong className="neutral">{setup.finalTrigger}</strong></div></div><div className="mini-grid"><div><span>Market State</span><strong>{setup.marketState}</strong></div><div><span>Execution Safety</span><strong>{setup.executionSafety}</strong></div></div><div className="locked">🔒 Proprietary gateway details hidden on public dashboard</div>{!setupLive&&<small className="muted">Realtime setup feed ready. Waiting for the strategy engine/MT4 integration.</small>}</div>
+        <div className="panel card setup-card">
+          <div className="row">
+            <div>
+              <div className="label">CURRENT TRADE SETUP • XAUUSD</div>
+              <h3 className="setup-title">{runtimeDirection==='WAIT'?'WAIT':runtimeDirection} • {setupStatusLabel}</h3>
+            </div>
+            <span className={`live-pill ${runtimeFresh?'feed-live':'feed-warn'}`}>● {runtimeFresh?'LIVE':'UPDATING'}</span>
+          </div>
+
+          <div style={{marginTop:10,fontSize:15,lineHeight:1.5}}>{simpleSetupMessage}</div>
+
+          <div style={{display:'grid',gap:8,marginTop:14}}>
+            <div className="mini-grid">
+              <div><span>4H + 1H Trend</span><strong className={trendReady?'positive':'neutral'}>{trendReady?'✓ READY':'WAITING'}</strong></div>
+              <div><span>15M Pullback</span><strong className={pullbackReady?'positive':'neutral'}>{pullbackReady?'✓ READY':'WAITING'}</strong></div>
+            </div>
+            <div className="mini-grid">
+              <div><span>5M Entry Trigger</span><strong className={triggerReady?'positive':'neutral'}>{triggerReady?'✓ READY':'WAITING'}</strong></div>
+              <div><span>Setup Checklist</span><strong>{runtimePayload.score!=null?`${runtimePayload.score}/10`:'—'}</strong></div>
+            </div>
+          </div>
+
+          {runtimeState==='SIGNAL'&&<div style={{marginTop:14}}>
+            <div className="label">PAPER TRADE PLAN</div>
+            <div className="mini-grid">
+              <div><span>Entry</span><strong>{runtimeRisk.entry!=null?Number(runtimeRisk.entry).toFixed(2):'—'}</strong></div>
+              <div><span>Stop Loss</span><strong>{runtimeRisk.stop!=null?Number(runtimeRisk.stop).toFixed(2):'—'}</strong></div>
+            </div>
+            <div className="mini-grid">
+              <div><span>Target 1</span><strong>{runtimeRisk.target1!=null?Number(runtimeRisk.target1).toFixed(2):'—'}</strong></div>
+              <div><span>Target 2</span><strong>{runtimeRisk.target2!=null?Number(runtimeRisk.target2).toFixed(2):'—'}</strong></div>
+            </div>
+          </div>}
+
+          {runtimeVcpr.nearest_pivot!=null&&<small className="muted" style={{display:'block',marginTop:12}}>
+            Nearby VCPR: {Number(runtimeVcpr.nearest_pivot).toFixed(2)} • {String(runtimeVcpr.context||'watching').replaceAll('_',' ')}
+          </small>}
+          <small className="muted" style={{display:'block',marginTop:6}}>Paper/demo research only. A setup is shown as a trade only after the 5-minute trigger confirms.</small>
+        </div>
         <div className="panel card"><div className="label">Official Calls Performance — Demo Account</div><div className="performance-grid"><div><span>Calls</span><strong>{performance.totalCalls}</strong></div><div><span>Win rate</span><strong>{performanceLive?`${performance.winRate.toFixed(1)}%`:'—'}</strong></div><div><span>Net R</span><strong className={performance.netR>=0?'positive':'negative'}>{performanceLive?`${performance.netR>=0?'+':''}${performance.netR.toFixed(1)}R`:'—'}</strong></div><div><span>Max DD</span><strong className="negative">{performanceLive?`${performance.maxDrawdownR.toFixed(1)}R`:'—'}</strong></div></div>{performance.demoBalance!=null&&<div className="mini-grid"><div><span>Demo Balance</span><strong>${performance.demoBalance.toFixed(2)}</strong></div><div><span>Demo Equity</span><strong>${(performance.demoEquity??performance.demoBalance).toFixed(2)}</strong></div></div>}<small className="muted">{performanceLive?'Realtime immutable-call performance snapshot.':'Ledger connected. Statistics begin only after official demo calls are recorded.'}</small></div>
       </div>}
     </section>
     <div className="source-note">SOURCE: {mt4Live?'Alpari MT4 realtime price':'temporary price fallback'} • CHART: {mt4CandleReady?`Alpari MT4 ${timeframe}`:`temporary ${timeframe} proxy`} • VCPR: {vcprs.length} M5-validated historical levels • DXY/US10Y remain temporary market proxies.</div>
-    <div className="ticker"><span>⚡ {state.headline||'Gold Intelligence dashboard online'} &nbsp;&nbsp; • &nbsp;&nbsp; {openSessions.length?`${openSessions.join(' + ')} session active`:'Session transition'} &nbsp;&nbsp; • &nbsp;&nbsp; {setup.totalCount?`${setup.passedCount}/${setup.totalCount} gateways passed`:'Gateway engine waiting'} &nbsp;&nbsp; • &nbsp;&nbsp; Public shows aggregate gateway state only.</span></div>
+    <div className="ticker"><span>⚡ {state.headline||'Gold Intelligence dashboard online'} &nbsp;&nbsp; • &nbsp;&nbsp; {openSessions.length?`${openSessions.join(' + ')} session active`:'Session transition'} &nbsp;&nbsp; • &nbsp;&nbsp; {runtimeDirection!=='WAIT'?`${runtimeDirection} • ${setupStatusLabel}`:'Waiting for clean setup'} &nbsp;&nbsp; • &nbsp;&nbsp; Public shows aggregate gateway state only.</span></div>
   </main>;
 }
