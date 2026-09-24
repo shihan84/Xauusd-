@@ -18,6 +18,8 @@ from intraday_strategy_suite_core import (
 BASE_DIR = Path(r"E:\xauusd")
 SYMBOL = "XAUUSD"
 STATE_FILE = BASE_DIR / "data" / "forward" / "intraday_strategy_suite_notify_state.json"
+TELEGRAM_STRATEGIES = {"SESSION_BREAK_RETEST_V1"}
+SIGNAL_STRATEGIES = {"SESSION_BREAK_RETEST_V1", "LIQUIDITY_SWEEP_REVERSAL_V1"}
 
 
 def load_state():
@@ -263,11 +265,12 @@ def one_cycle(url, key, token, chat_id, telegram_enabled=True):
     for strategy_id, result in results.items():
         patch_runtime(url, key, strategy_id, result, source_meta)
         setup_tg = notify_state_change(
-            token, chat_id, strategy_id, result, enabled=telegram_enabled
+            token, chat_id, strategy_id, result,
+            enabled=telegram_enabled and strategy_id in TELEGRAM_STRATEGIES
         )
-        created = insert_signal(url, key, strategy_id, result)
+        created = insert_signal(url, key, strategy_id, result) if strategy_id in SIGNAL_STRATEGIES else None
         signal_tg = False
-        if created and telegram_enabled:
+        if created and telegram_enabled and strategy_id in TELEGRAM_STRATEGIES:
             signal_tg = telegram_post(token, chat_id, signal_message(result))
 
         summaries.append(
