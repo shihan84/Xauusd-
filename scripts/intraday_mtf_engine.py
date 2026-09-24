@@ -2,12 +2,12 @@ import argparse
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
 
-from intraday_mtf_core import PERIODS, closed_rows, enrich_bars, evaluate_strategy, find_hst, load_env_file, parse_hst
+from intraday_mtf_core import BROKER_TZ, PERIODS, enrich_bars, evaluate_strategy, find_hst, load_env_file, parse_hst
 
 BASE_DIR = Path(r"E:\xauusd")
 ENV_FILE = BASE_DIR / "bridge" / ".env"
@@ -61,19 +61,77 @@ def load_vcpr_levels(url, key):
     return response.json()
 
 
-def load_timeframes(max_rows=420):
+def load_supabase_closed_candles(url, key, timeframe, limit=600):
+    response = requests.get(
+        f"{url}/rest/v1/market_candles",
+        headers=headers(key),
+        params={
+            "select": "open_time,open,high,low,close,source",
+            "symbol": f"eq.{SYMBOL}",
+            "timeframe": f"eq.{timeframe}",
+            "is_closed": "eq.true",
+            "order": "open_time.desc",
+            "limit": str(limit),
+        },
+        timeout=20,
+    )
+    if not response.ok:
+        raise RuntimeError(
+            f"market_candles {timeframe} HTTP {response.status_code}: {response.text[:300]}"
+        )
+
+    rows = []
+    for row in reversed(response.json()):
+        raw_ts = int(row["open_time"])
+        broker_naive = datetime.fromtimestamp(raw_ts, timezone.utc).replace(tzinfo=None)
+        broker_dt = broker_naive.replace(tzinfo=BROKER_TZ)
+        rows.append({
+            "raw_ts": raw_ts,
+            "broker_dt": broker_dt,
+            "utc_dt": broker_dt.astimezone(timezone.utc),
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+            "tick_volume": 0,
+            "spread": 0,
+            "source": row.get("source") or "MT4",
+        })
+    return rows
+
+
+def load_timeframes(url, key, max_rows=420):
     result = {}
     meta = {}
+
     for name, period in PERIODS.items():
         path = find_hst(period, SYMBOL)
         parsed = parse_hst(path, period, max_rows=max_rows)
-        rows = closed_rows(parsed)
+        hst_rows = parsed["rows"]
+        cloud_rows = load_supabase_closed_candles(url, key, name, limit=max(600, max_rows))
+
+        # HST supplies the long indicator lookback; Supabase supplies current closed candles.
+        # Matching MT4 broker-wallclock timestamps are deliberately replaced by the cloud copy.
+        merged = {int(row["raw_ts"]): row for row in hst_rows}
+        for row in cloud_rows:
+            merged[int(row["raw_ts"])] = row
+
+        rows = [merged[k] for k in sorted(merged)]
+        if len(rows) > max_rows:
+            rows = rows[-max_rows:]
+
         result[name] = enrich_bars(rows)
         meta[name] = {
-            "path": parsed["path"],
-            "rows": len(rows),
+            "hst_path": parsed["path"],
+            "hst_rows_loaded": len(hst_rows),
+            "hst_last_open_broker": hst_rows[-1]["broker_dt"].isoformat() if hst_rows else None,
+            "cloud_closed_rows_loaded": len(cloud_rows),
+            "cloud_last_open_broker": cloud_rows[-1]["broker_dt"].isoformat() if cloud_rows else None,
+            "merged_rows": len(rows),
             "last_closed_open_broker": rows[-1]["broker_dt"].isoformat() if rows else None,
+            "last_closed_open_utc": rows[-1]["utc_dt"].isoformat() if rows else None,
         }
+
     return result, meta
 
 
@@ -93,7 +151,7 @@ def patch_runtime(url, key, result, source_meta):
         "ma": result.get("ma"),
         "bars": result.get("bars"),
         "timeframes_ready": result.get("timeframes_ready"),
-        "source": "ALPARI_MT4_HST",
+        "source": "ALPARI_MT4_HST+SUPABASE_LIVE",
         "source_meta": source_meta,
         "paper_only": True,
     }
@@ -145,7 +203,7 @@ def insert_signal(url, key, result):
             "bars": result.get("bars"),
             "risk": plan.get("risk"),
             "paper_only": True,
-            "source": "ALPARI_MT4_HST",
+            "source": "ALPARI_MT4_HST+SUPABASE_LIVE",
         },
     }
 
@@ -204,15 +262,39 @@ def send_telegram(token, chat_id, result):
 
 
 def one_cycle(url, key, token, chat_id, telegram_enabled=True):
-    series, source_meta = load_timeframes()
+    series, source_meta = load_timeframes(url, key)
     levels = load_vcpr_levels(url, key)
 
-    result = evaluate_strategy(
-        series["M5"],
-        series["M15"],
-        series["H1"],
-        series["H4"],
-        levels,
+    latest_m5 = series["M5"][-1] if series.get("M5") else None
+    latest_m5_close_utc = (
+        latest_m5["utc_dt"] + timedelta(minutes=5) if latest_m5 else None
+    )
+    feed_age_minutes = (
+        (datetime.now(timezone.utc) - latest_m5_close_utc).total_seconds() / 60.0
+        if latest_m5_close_utc else 999999.0
+    )
+
+    if feed_age_minutes > 20:
+        result = {
+            "state": "DATA_STALE",
+            "direction": None,
+            "score": 0,
+            "reason": f"Latest closed M5 feed is {feed_age_minutes:.1f} minutes old; signals suppressed.",
+            "price": latest_m5.get("close") if latest_m5 else None,
+            "timeframes_ready": {k: bool(series.get(k)) for k in PERIODS},
+        }
+    else:
+        result = evaluate_strategy(
+            series["M5"],
+            series["M15"],
+            series["H1"],
+            series["H4"],
+            levels,
+        )
+
+    source_meta["feed_age_minutes"] = round(feed_age_minutes, 2)
+    source_meta["latest_m5_close_utc"] = (
+        latest_m5_close_utc.isoformat() if latest_m5_close_utc else None
     )
 
     patch_runtime(url, key, result, source_meta)
